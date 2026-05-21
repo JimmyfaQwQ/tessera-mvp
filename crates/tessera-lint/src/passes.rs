@@ -70,19 +70,9 @@ pub struct HandlerMustAsync;
 
 impl LintPass for HandlerMustAsync {
     fn name(&self) -> &'static str { "L-HANDLER-MUST-ASYNC" }
-    fn check(&mut self, program: &Program, _env: &TypeEnv) -> Vec<Diagnostic> {
-        let mut diags = Vec::new();
-        for item in &program.items {
-            if let TopLevelItem::ThreadTemplateDecl(td) = item {
-                for m in &td.members {
-                    if let ThreadTemplateMember::Handler(h) = m {
-                        // Handlers are always async by grammar; this is a defense-in-depth check.
-                        let _ = h; // already validated at parse time
-                    }
-                }
-            }
-        }
-        diags
+    fn check(&mut self, _program: &Program, _env: &TypeEnv) -> Vec<Diagnostic> {
+        // Handlers are always async by grammar; validated at parse time.
+        vec![]
     }
 }
 

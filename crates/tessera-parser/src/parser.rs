@@ -26,6 +26,7 @@ impl Parser {
         self.tokens.get(self.pos).map(|s| &s.node)
     }
 
+    #[allow(dead_code)]
     fn peek2(&self) -> Option<&Token> {
         self.tokens.get(self.pos + 1).map(|s| &s.node)
     }

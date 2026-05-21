@@ -39,12 +39,20 @@ pub async fn run_thread_task(
                 interp.0.func_table.borrow_mut().insert(f.name.name.clone(), Arc::new(f.clone()));
             }
         }
-        // Pre-define expose fields with type-default values so __on_enter__ can assign them.
+        // Pre-define expose / expose_mutable fields with type-default values.
         for m in &d.members {
-            if let ThreadTemplateMember::Expose(e) = m {
-                interp.0.expose_field_names.borrow_mut().insert(e.name.name.clone());
-                let default = default_value_for_type(&e.ty);
-                interp.0.env.borrow_mut().define(e.name.name.clone(), default);
+            match m {
+                ThreadTemplateMember::Expose(e) => {
+                    interp.0.expose_field_names.borrow_mut().insert(e.name.name.clone());
+                    let default = default_value_for_type(&e.ty);
+                    interp.0.env.borrow_mut().define(e.name.name.clone(), default);
+                }
+                ThreadTemplateMember::ExposeMutable(e) => {
+                    interp.0.expose_mutable_field_names.borrow_mut().insert(e.name.name.clone());
+                    let default = default_value_for_type(&e.ty);
+                    interp.0.env.borrow_mut().define(e.name.name.clone(), default);
+                }
+                _ => {}
             }
         }
         // Bind template params

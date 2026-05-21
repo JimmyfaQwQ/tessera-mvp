@@ -21,6 +21,7 @@ pub struct InterpState {
     pub thread_templates: RefCell<HashMap<String, Arc<ThreadTemplateDecl>>>,
     pub current_thread_state: RefCell<Option<Arc<ThreadState>>>,
     pub expose_field_names: RefCell<HashSet<String>>,
+    pub expose_mutable_field_names: RefCell<HashSet<String>>,
 }
 
 impl InterpState {
@@ -32,6 +33,7 @@ impl InterpState {
             thread_templates: RefCell::new(HashMap::new()),
             current_thread_state: RefCell::new(None),
             expose_field_names: RefCell::new(HashSet::new()),
+            expose_mutable_field_names: RefCell::new(HashSet::new()),
         }
     }
 
@@ -44,6 +46,7 @@ impl InterpState {
             thread_templates: RefCell::new(parent.thread_templates.borrow().clone()),
             current_thread_state: RefCell::new(None),
             expose_field_names: RefCell::new(HashSet::new()),
+            expose_mutable_field_names: RefCell::new(HashSet::new()),
         })
     }
 }
@@ -690,10 +693,15 @@ impl Interpreter {
     // Non-async: uses try_write() so the thread body never yields here.
     // try_write() always succeeds (no contention — only this task writes).
     fn maybe_sync_expose(&self, name: &str, value: &Value) {
-        let is_expose = self.0.expose_field_names.borrow().contains(name);
-        if is_expose {
+        if self.0.expose_field_names.borrow().contains(name) {
             if let Some(state) = self.0.current_thread_state.borrow().clone() {
                 if let Ok(mut guard) = state.expose_fields.try_write() {
+                    guard.insert(name.to_string(), value.clone());
+                }
+            }
+        } else if self.0.expose_mutable_field_names.borrow().contains(name) {
+            if let Some(state) = self.0.current_thread_state.borrow().clone() {
+                if let Ok(mut guard) = state.expose_mutable_fields.try_write() {
                     guard.insert(name.to_string(), value.clone());
                 }
             }

@@ -4,18 +4,18 @@ $template Counter(initial: int = 0) {
     expose count: int;
 
     function __on_enter__(): void {
-        print("[Counter] enter, initial = " + initial);
+        println("[Counter] enter, initial = " + initial);
         count = initial;
     }
 
     function __on_exit__(): void {
-        print("[Counter] exit, final count = " + count);
+        println("[Counter] exit, final count = " + count);
     }
 
     async function __on_terminate__(): void {
-        print("[Counter] terminate requested, cleaning up...");
+        println("[Counter] terminate requested, cleaning up...");
         await asleep(50);
-        print("[Counter] cleanup done");
+        println("[Counter] cleanup done");
     }
 
     async function incrementOnce(): void {
@@ -24,12 +24,12 @@ $template Counter(initial: int = 0) {
     }
 
     async handler add(x: int, y: int): int {
-        print("[Counter] handler add(" + x + ", " + y + ")");
+        println("[Counter] handler add(" + x + ", " + y + ")");
         return x + y;
     }
 
     async handler addToCount(delta: int): void {
-        print("[Counter] handler addToCount(" + delta + ")");
+        println("[Counter] handler addToCount(" + delta + ")");
         count = count + delta;
     }
 
@@ -38,7 +38,7 @@ $template Counter(initial: int = 0) {
     }
 }
 
-print("=== Tessera 示例程序开始 ===");
+println("=== Tessera 示例程序开始 ===");
 
 $Counter(0) {
     for (let i = 0; i < 3; i = i + 1) {
@@ -59,17 +59,17 @@ let addResult: Result<int, HandlerDispatchError> =
 
 if (addResult.isOk()) {
     let sum: int = addResult.unwrap();
-    print("[Main] counterThread.add(1, 2) = " + sum);
+    println("[Main] counterThread.add(1, 2) = " + sum);
 } else {
-    print("[Main] Handler dispatch failed: " + addResult.unwrapErr());
+    println("[Main] Handler dispatch failed: " + addResult.unwrapErr());
 }
 
-print("[Main] request terminate counterThread");
+println("[Main] request terminate counterThread");
 counterThread.terminate().wait();
-print("[Main] counterThread terminated, final = " + counterThread.count);
+println("[Main] counterThread terminated, final = " + counterThread.count);
 
-print("[Main] request terminate anotherCounter");
+println("[Main] request terminate anotherCounter");
 anotherCounter.terminate().wait();
-print("[Main] anotherCounter terminated, final = " + anotherCounter.count);
+println("[Main] anotherCounter terminated, final = " + anotherCounter.count);
 
-print("=== Tessera 示例程序结束 ===");
+println("=== Tessera 示例程序结束 ===");

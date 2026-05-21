@@ -1,0 +1,203 @@
+// ═══════════════════════════════════════════════════════════════════════
+// Tessera 演示：并发任务处理系统
+//
+// 在大多数并发语言里，"线程"只是执行单元，状态要靠锁来共享、靠消息来协调。
+// Tessera 的核心理念是：线程本身就是一个带状态、带接口、带生命周期的对象。
+//
+// 本示例展示 Tessera 的四个核心强势点：
+//
+//   1. @template Traced   — 作用域生命周期钩子
+//                           把"日志注入"从业务逻辑中拆出来；
+//                           不论代码如何退出（正常/break/return），__on_exit__ 都会运行。
+//
+//   2. expose + 直读       — 线程内部字段对外只读暴露；
+//                           外部无需 handler 即可查询状态快照。
+//
+//   3. async handler       — 跨线程 RPC：调用代码在目标线程自己的事件循环内执行，
+//                           天然避免竞争，返回 Result 处理调度失败。
+//
+//   4. __on_terminate__    — terminatable 线程的优雅终止协议；
+//                           terminate() 打断阻塞的 dequeue，触发清理钩子，
+//                           调用方通过 .wait() 等到真正结束再继续。
+//
+// ═══════════════════════════════════════════════════════════════════════
+
+
+// ── 1. @template Traced ─────────────────────────────────────────────────────
+//
+// 修饰任意代码块，进入/离开时自动把日志推入队列。
+// 横切关注点（"这段代码开始了/结束了"）与业务代码完全解耦。
+
+@template Traced(label: String, logQueue: Queue<String>) {
+    function __on_enter__(): void {
+        logQueue.tryPush(">> [" + label + "] 开始");
+    }
+    function __on_exit__(): void {
+        logQueue.tryPush("<< [" + label + "] 结束");
+    }
+}
+
+
+// ── 2. Logger 线程 ───────────────────────────────────────────────────────────
+//
+// 集中接收并打印所有日志，通过 Queue<String> 与发送方解耦。
+// 没有 __on_terminate__ => 不可终止；关闭队列让它自然退出。
+// expose logCount => 外部可直接读取已打印行数，无需任何 handler。
+
+$template Logger(q: Queue<String>) {
+    expose logCount: int;
+
+    function __on_enter__(): void {
+        logCount = 0;
+        println("[Logger] 启动");
+    }
+
+    function __on_exit__(): void {
+        println("[Logger] 关闭，共处理 " + logCount + " 条日志");
+    }
+
+    async function run(): void {
+        while (true) {
+            let msg: Option<String> = await q.dequeue();
+            if (msg.isNone()) {
+                break;
+            }
+            println("[LOG] " + msg.unwrap());
+            logCount = logCount + 1;
+        }
+    }
+}
+
+
+// ── 3. Worker 线程 ───────────────────────────────────────────────────────────
+//
+// 从 jobs 队列取任务并处理。
+//
+// 关键特性：
+//   expose tasksCompleted        — 只读暴露；内部写，外部读
+//   expose_mutable shared        — 可变暴露；内外均可读写（需并发安全类型）
+//   async handler status         — 跨线程调用，代码在 Worker 的事件循环内执行
+//   __on_terminate__             — 定义了此钩子 => terminatable
+
+$template Worker(id: int, jobs: Queue<String>, logQueue: Queue<String>, total: locked<int>) {
+    expose tasksCompleted: int;
+    expose_mutable shared: locked<int>;   // 内外双向可读写，类型必须是并发安全的
+
+    function __on_enter__(): void {
+        tasksCompleted = 0;
+        shared = locked(0);   // expose_mutable 字段在内部像普通变量一样初始化
+        logQueue.tryPush("Worker#" + id + " 就绪");
+    }
+
+    // 定义此函数 => 该线程实例为 terminatable
+    async function __on_terminate__(): void {
+        logQueue.tryPush("Worker#" + id + " 收到终止，已完成=" + tasksCompleted + "，清理中...");
+        await asleep(30);
+        logQueue.tryPush("Worker#" + id + " 清理完毕");
+    }
+
+    async function processJob(job: String): void {
+        await asleep(20);
+        tasksCompleted = tasksCompleted + 1;
+        // 更新全局聚合计数（locked<int> 参数）
+        let cur: int = total.get();
+        total.set(cur + 1);
+        // 同时把本 worker 完成数写进 expose_mutable shared（供外部直接读写）
+        let s: int = shared.get();
+        shared.set(s + 1);
+        logQueue.tryPush("Worker#" + id + " 完成: " + job);
+    }
+
+    async function run(): void {
+        while (true) {
+            let opt: Option<String> = await jobs.dequeue();
+            if (opt.isNone()) {
+                break;
+            }
+            await processJob(opt.unwrap());
+        }
+    }
+
+    // handler：在 Worker 自己的事件循环内执行，安全访问 tasksCompleted
+    async handler status(): String {
+        return "Worker#" + id + " [已完成=" + tasksCompleted + "]";
+    }
+}
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  主流程
+// ══════════════════════════════════════════════════════════════════════════════
+
+println("=== 任务处理系统 启动 ===");
+
+let logQueue: Queue<String> = Queue<String>();
+let jobs: Queue<String>     = Queue<String>();
+let total: locked<int>      = locked(0);
+
+// 启动日志线程
+$Logger(logQueue) {
+    await run();
+} := logger;
+
+// 启动三个 Worker（均为 terminatable）
+$Worker(1, jobs, logQueue, total) { await run(); } := w1;
+$Worker(2, jobs, logQueue, total) { await run(); } := w2;
+$Worker(3, jobs, logQueue, total) { await run(); } := w3;
+
+
+// ── @Traced 修饰"任务派发"块 ─────────────────────────────────────────────────
+// 进/出自动写日志，业务代码里没有一行手写 log 调用。
+// 即便循环中途 break，__on_exit__ 也依然会执行。
+@Traced("任务派发", logQueue) {
+    for (let i = 1; i <= 9; i = i + 1) {
+        jobs.tryPush("task-" + i);
+    }
+}
+
+// 让三个 Worker 把 9 个任务消化掉
+asleep(400);
+
+
+// ── Handler 查询：跨线程调用，代码在目标 Worker 的事件循环内执行 ─────────────
+// 返回 Result<String, HandlerDispatchError>，明确处理"线程已终止/崩溃"的情况
+let s1: Result<String, HandlerDispatchError> = w1.status().waitHandler();
+let s2: Result<String, HandlerDispatchError> = w2.status().waitHandler();
+let s3: Result<String, HandlerDispatchError> = w3.status().waitHandler();
+
+if (s1.isOk()) { println("[Main] " + s1.unwrap()); }
+if (s2.isOk()) { println("[Main] " + s2.unwrap()); }
+if (s3.isOk()) { println("[Main] " + s3.unwrap()); }
+
+// ── expose 直读：不需要任何 handler，直接拿到线程暴露的只读快照 ────────────────
+println("[Main] expose 直读 → w1.tasksCompleted = " + w1.tasksCompleted);
+
+// ── expose_mutable 外部读：读取 Worker 自己维护的 shared 计数 ─────────────────
+// expose_mutable 字段是并发安全类型，主线程可以直接读到它当前的值
+let sharedVal: locked<int> = w1.shared;
+println("[Main] expose_mutable 外部读 → w1.shared = " + sharedVal.get());
+
+// ── expose_mutable 外部写：主线程注入一个新的 locked<int>（替换共享对象）──────
+// 这是 expose_mutable 区别于 expose 的核心：外部可以写入
+let injected: locked<int> = locked(999);
+w1.shared = injected;   // 外部写，w1.shared 换成新对象
+println("[Main] expose_mutable 外部写后 → w1.shared = " + w1.shared.get());
+
+
+// ── 优雅终止：Worker 此时阻塞在 dequeue() 等待新任务 ─────────────────────────
+// terminate() 打断阻塞，触发 __on_terminate__ 清理钩子，
+// .wait() 保证主线程等到 Worker 真正退出后再继续
+w1.terminate().wait();
+w2.terminate().wait();
+w3.terminate().wait();
+
+// 所有 Worker 已终止，shared locked<int> 无竞争，直接读取
+let finalTotal: int = total.get();
+println("[Main] 全部 Worker 已终止，总完成任务数: " + finalTotal);
+
+// 关闭日志队列 → Logger dequeue 返回 None → run() 退出 → Logger 自然终止
+logQueue.close();
+asleep(100);
+
+println("[Main] Logger 已退出，logCount = " + logger.logCount);
+println("=== 任务处理系统 结束 ===");
