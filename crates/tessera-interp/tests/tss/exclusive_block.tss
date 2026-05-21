@@ -1,0 +1,21 @@
+// Verify exclusive blocks prevent handler interleaving.
+// We just test that the exclusive block runs without crashing.
+$template MyThread() {
+    expose step: int;
+
+    async handler ping() {
+        let step: int = step + 1;
+    }
+}
+
+$MyThread() {
+    let step: int = 0;
+    #exclusive {
+        let step: int = step + 100;
+    }
+} := t;
+
+t.terminate().wait();
+
+let v: int = t.step;
+assert(v == 100);

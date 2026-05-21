@@ -1,0 +1,18 @@
+[package]
+name = "tessera-interp"
+version = "0.1.0"
+edition = "2021"
+
+[dev-dependencies]
+tessera-lexer   = { path = "../tessera-lexer" }
+tessera-parser  = { path = "../tessera-parser" }
+
+[dependencies]
+tessera-ast     = { path = "../tessera-ast" }
+tessera-types   = { path = "../tessera-types" }
+tessera-lint    = { path = "../tessera-lint" }
+tessera-runtime = { path = "../tessera-runtime" }
+tokio           = { workspace = true }
+indexmap        = { workspace = true }
+thiserror       = { workspace = true }
+async-recursion = { workspace = true }

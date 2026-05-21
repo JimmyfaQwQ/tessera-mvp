@@ -1,0 +1,6 @@
+// Test locked<int> in single-threaded context (get/set semantics).
+let counter: locked<int> = locked(0);
+counter.set(counter.get() + 1);
+counter.set(counter.get() + 10);
+let v: int = counter.get();
+assert(v == 11);

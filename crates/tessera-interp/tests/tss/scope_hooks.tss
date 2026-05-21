@@ -1,0 +1,17 @@
+@template MyScope(counter: locked<int>) {
+    function __on_enter__(): void {
+        counter.set(counter.get() + 1);
+    }
+    function __on_exit__(): void {
+        counter.set(counter.get() + 10);
+    }
+}
+
+let log: locked<int> = locked(0);
+
+@MyScope(log) {
+    log.set(log.get() + 100);
+}
+
+let v: int = log.get();
+assert(v == 111);

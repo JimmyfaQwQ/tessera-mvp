@@ -1,0 +1,12 @@
+[package]
+name = "tessera-runtime"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tessera-ast   = { path = "../tessera-ast" }
+tokio         = { workspace = true }
+async-channel = { workspace = true }
+indexmap      = { workspace = true }
+parking_lot   = { workspace = true }
+thiserror     = { workspace = true }

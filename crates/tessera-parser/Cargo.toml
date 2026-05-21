@@ -1,0 +1,9 @@
+[package]
+name = "tessera-parser"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tessera-ast    = { path = "../tessera-ast" }
+tessera-lexer  = { path = "../tessera-lexer" }
+thiserror      = { workspace = true }

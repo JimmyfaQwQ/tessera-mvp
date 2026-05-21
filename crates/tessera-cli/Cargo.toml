@@ -1,0 +1,17 @@
+[package]
+name = "tessera-cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "tessera"
+path = "src/main.rs"
+
+[dependencies]
+tessera-ast    = { path = "../tessera-ast" }
+tessera-lexer  = { path = "../tessera-lexer" }
+tessera-parser = { path = "../tessera-parser" }
+tessera-types  = { path = "../tessera-types" }
+tessera-lint   = { path = "../tessera-lint" }
+tessera-interp = { path = "../tessera-interp" }
+tokio          = { workspace = true }

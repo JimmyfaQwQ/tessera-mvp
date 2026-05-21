@@ -1,0 +1,75 @@
+// Tessera example code — simplified (no infinite loops)
+
+$template Counter(initial: int = 0) {
+    expose count: int;
+
+    function __on_enter__(): void {
+        print("[Counter] enter, initial = " + initial);
+        count = initial;
+    }
+
+    function __on_exit__(): void {
+        print("[Counter] exit, final count = " + count);
+    }
+
+    async function __on_terminate__(): void {
+        print("[Counter] terminate requested, cleaning up...");
+        await asleep(50);
+        print("[Counter] cleanup done");
+    }
+
+    async function incrementOnce(): void {
+        await asleep(10);
+        count = count + 1;
+    }
+
+    async handler add(x: int, y: int): int {
+        print("[Counter] handler add(" + x + ", " + y + ")");
+        return x + y;
+    }
+
+    async handler addToCount(delta: int): void {
+        print("[Counter] handler addToCount(" + delta + ")");
+        count = count + delta;
+    }
+
+    async handler getCount(): int {
+        return count;
+    }
+}
+
+print("=== Tessera 示例程序开始 ===");
+
+$Counter(0) {
+    for (let i = 0; i < 3; i = i + 1) {
+        await incrementOnce();
+        await asleep(20);
+    }
+} := counterThread;
+
+anotherCounter =
+    $Counter(10) {
+        for (let i = 0; i < 2; i = i + 1) {
+            await incrementOnce();
+        }
+    };
+
+let addResult: Result<int, HandlerDispatchError> =
+    counterThread.add(1, 2).waitHandler();
+
+if (addResult.isOk()) {
+    let sum: int = addResult.unwrap();
+    print("[Main] counterThread.add(1, 2) = " + sum);
+} else {
+    print("[Main] Handler dispatch failed: " + addResult.unwrapErr());
+}
+
+print("[Main] request terminate counterThread");
+counterThread.terminate().wait();
+print("[Main] counterThread terminated, final = " + counterThread.count);
+
+print("[Main] request terminate anotherCounter");
+anotherCounter.terminate().wait();
+print("[Main] anotherCounter terminated, final = " + anotherCounter.count);
+
+print("=== Tessera 示例程序结束 ===");

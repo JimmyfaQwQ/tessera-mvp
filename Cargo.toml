@@ -1,0 +1,22 @@
+[workspace]
+members = [
+    "crates/tessera-ast",
+    "crates/tessera-lexer",
+    "crates/tessera-parser",
+    "crates/tessera-types",
+    "crates/tessera-lint",
+    "crates/tessera-runtime",
+    "crates/tessera-interp",
+    "crates/tessera-cli",
+]
+resolver = "2"
+
+[workspace.dependencies]
+logos       = "0.14"
+tokio       = { version = "1", features = ["full"] }
+async-channel = "2"
+indexmap    = "2"
+parking_lot = "0.12"
+miette      = { version = "7", features = ["fancy"] }
+thiserror       = "1"
+async-recursion = "1"

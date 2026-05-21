@@ -1,0 +1,14 @@
+function add(a: int, b: int): int {
+    return a + b;
+}
+
+function fib(n: int): int {
+    if (n <= 1) { return n; }
+    return fib(n - 1) + fib(n - 2);
+}
+
+let sum: int = add(3, 4);
+assert(sum == 7);
+
+let f10: int = fib(10);
+assert(f10 == 55);

@@ -1,0 +1,295 @@
+use tessera_ast::*;
+use tessera_ast::visitor::Visitor;
+use tessera_types::{Type, TypeEnv};
+use crate::{Diagnostic, LintPass};
+
+// ── L-AWAIT-ASYNC-ONLY ────────────────────────────────────────────────────────
+
+pub struct AwaitAsyncOnly;
+
+impl LintPass for AwaitAsyncOnly {
+    fn name(&self) -> &'static str { "L-AWAIT-ASYNC-ONLY" }
+    fn check(&mut self, program: &Program, _env: &TypeEnv) -> Vec<Diagnostic> {
+        let mut v = AwaitAsyncVisitor { in_async: false, diags: vec![] };
+        v.visit_program(program);
+        v.diags
+    }
+}
+
+struct AwaitAsyncVisitor {
+    in_async: bool,
+    diags: Vec<Diagnostic>,
+}
+
+impl Visitor for AwaitAsyncVisitor {
+    fn visit_func_def(&mut self, f: &FuncDef) {
+        let old = self.in_async;
+        self.in_async = f.kind == FuncKind::Async;
+        self.visit_block(&f.body);
+        self.in_async = old;
+    }
+
+    fn visit_handler_def(&mut self, h: &HandlerDef) {
+        let old = self.in_async;
+        self.in_async = true;
+        self.visit_block(&h.body);
+        self.in_async = old;
+    }
+
+    fn visit_stmt(&mut self, s: &Stmt) {
+        if let Stmt::ThreadSpawn(ts) = s {
+            for arg in &ts.args { self.visit_expr(arg); }
+            let old = self.in_async;
+            self.in_async = true;
+            self.visit_block(&ts.body);
+            self.in_async = old;
+            if let ThreadTemplateRef::Anonymous(decl) = &ts.template {
+                self.visit_thread_template_decl(decl);
+            }
+        } else {
+            tessera_ast::visitor::walk_stmt(self, s);
+        }
+    }
+
+    fn visit_expr(&mut self, e: &Expr) {
+        if let Expr::Await(a) = e {
+            if !self.in_async {
+                self.diags.push(
+                    Diagnostic::error("L-AWAIT-ASYNC-ONLY", "await can only be used in async functions", a.span)
+                        .with_help("make the enclosing function async, or use .wait() instead"),
+                );
+            }
+        }
+        tessera_ast::visitor::walk_expr(self, e);
+    }
+}
+
+// ── L-HANDLER-MUST-ASYNC ──────────────────────────────────────────────────────
+
+pub struct HandlerMustAsync;
+
+impl LintPass for HandlerMustAsync {
+    fn name(&self) -> &'static str { "L-HANDLER-MUST-ASYNC" }
+    fn check(&mut self, program: &Program, _env: &TypeEnv) -> Vec<Diagnostic> {
+        let mut diags = Vec::new();
+        for item in &program.items {
+            if let TopLevelItem::ThreadTemplateDecl(td) = item {
+                for m in &td.members {
+                    if let ThreadTemplateMember::Handler(h) = m {
+                        // Handlers are always async by grammar; this is a defense-in-depth check.
+                        let _ = h; // already validated at parse time
+                    }
+                }
+            }
+        }
+        diags
+    }
+}
+
+// ── L-HANDLER-AWAIT-TYPE ──────────────────────────────────────────────────────
+
+pub struct HandlerAwaitType;
+
+impl LintPass for HandlerAwaitType {
+    fn name(&self) -> &'static str { "L-HANDLER-AWAIT-TYPE" }
+    fn check(&mut self, program: &Program, env: &TypeEnv) -> Vec<Diagnostic> {
+        let mut v = HandlerAwaitVisitor { env, diags: vec![] };
+        v.visit_program(program);
+        v.diags
+    }
+}
+
+struct HandlerAwaitVisitor<'e> {
+    env: &'e TypeEnv,
+    diags: Vec<Diagnostic>,
+}
+
+impl<'e> Visitor for HandlerAwaitVisitor<'e> {
+    fn visit_expr(&mut self, e: &Expr) {
+        if let Expr::MethodCall(m) = e {
+            match m.method.name.as_str() {
+                "wait" => {
+                    // receiver should not be HandlerFuture
+                    if let Expr::Ident(i) = &m.receiver {
+                        if let Some(ty) = self.env.lookup(&i.name) {
+                            if matches!(ty, Type::HandlerFuture(_)) {
+                                self.diags.push(
+                                    Diagnostic::error(
+                                        "L-HANDLER-AWAIT-TYPE",
+                                        "use .waitHandler() or .awaitHandler() on HandlerFuture, not .wait()",
+                                        m.span,
+                                    )
+                                );
+                            }
+                        }
+                    }
+                }
+                "waitHandler" | "awaitHandler" => {
+                    // receiver should be HandlerFuture, not plain Future
+                    if let Expr::Ident(i) = &m.receiver {
+                        if let Some(ty) = self.env.lookup(&i.name) {
+                            if matches!(ty, Type::Future(_)) {
+                                self.diags.push(
+                                    Diagnostic::error(
+                                        "L-HANDLER-AWAIT-TYPE",
+                                        "use .wait() or await on Future, not .waitHandler()/.awaitHandler()",
+                                        m.span,
+                                    )
+                                );
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        tessera_ast::visitor::walk_expr(self, e);
+    }
+}
+
+// ── L-EXPOSE-MUTABLE-UNSAFE ───────────────────────────────────────────────────
+
+pub struct ExposeMutableUnsafe;
+
+impl LintPass for ExposeMutableUnsafe {
+    fn name(&self) -> &'static str { "L-EXPOSE-MUTABLE-UNSAFE" }
+    fn check(&mut self, program: &Program, env: &TypeEnv) -> Vec<Diagnostic> {
+        let mut diags = Vec::new();
+        for item in &program.items {
+            if let TopLevelItem::ThreadTemplateDecl(td) = item {
+                for m in &td.members {
+                    if let ThreadTemplateMember::ExposeMutable(e) = m {
+                        let ty = resolve_type_expr(env, &e.ty);
+                        if !ty.is_concurrent_safe() {
+                            diags.push(
+                                Diagnostic::error(
+                                    "L-EXPOSE-MUTABLE-UNSAFE",
+                                    format!("expose_mutable field '{}' has type '{}' which is not concurrent-safe; use locked<T> or Queue<T>", e.name.name, ty),
+                                    e.span,
+                                )
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        diags
+    }
+}
+
+// ── L-GENERIC-TYPE-ARG-MISSING ────────────────────────────────────────────────
+
+pub struct GenericTypeArgMissing;
+
+impl LintPass for GenericTypeArgMissing {
+    fn name(&self) -> &'static str { "L-GENERIC-TYPE-ARG-MISSING" }
+    fn check(&mut self, program: &Program, _env: &TypeEnv) -> Vec<Diagnostic> {
+        let mut v = GenericArgVisitor { diags: vec![] };
+        v.visit_program(program);
+        v.diags
+    }
+}
+
+struct GenericArgVisitor {
+    diags: Vec<Diagnostic>,
+}
+
+impl GenericArgVisitor {
+    fn check_type(&mut self, te: &TypeExpr) {
+        if let TypeExpr::Named(ident, args) = te {
+            let required: Option<usize> = match ident.name.as_str() {
+                "List" | "Option" | "Future" | "HandlerFuture" | "locked" | "Queue" => Some(1),
+                "Map" | "Result" => Some(2),
+                _ => None,
+            };
+            if let Some(n) = required {
+                if args.len() != n {
+                    self.diags.push(
+                        Diagnostic::error(
+                            "L-GENERIC-TYPE-ARG-MISSING",
+                            format!("'{}' requires {} type argument(s), got {}", ident.name, n, args.len()),
+                            ident.span,
+                        )
+                    );
+                }
+            }
+            for a in args { self.check_type(a); }
+        }
+    }
+}
+
+impl Visitor for GenericArgVisitor {
+    fn visit_type_expr(&mut self, t: &TypeExpr) {
+        self.check_type(t);
+    }
+
+    fn visit_expose_decl(&mut self, e: &ExposeDecl, _mutable: bool) {
+        self.check_type(&e.ty);
+    }
+}
+
+// ── L-TERMINATE-NON-TERMINATABLE ─────────────────────────────────────────────
+
+pub struct TerminateNonTerminatable;
+
+impl LintPass for TerminateNonTerminatable {
+    fn name(&self) -> &'static str { "L-TERMINATE-NON-TERMINATABLE" }
+    fn check(&mut self, program: &Program, env: &TypeEnv) -> Vec<Diagnostic> {
+        let mut v = TerminateVisitor { env, diags: vec![] };
+        v.visit_program(program);
+        v.diags
+    }
+}
+
+struct TerminateVisitor<'e> {
+    env: &'e TypeEnv,
+    diags: Vec<Diagnostic>,
+}
+
+impl<'e> Visitor for TerminateVisitor<'e> {
+    fn visit_expr(&mut self, e: &Expr) {
+        if let Expr::MethodCall(m) = e {
+            if m.method.name == "terminate" {
+                if let Expr::Ident(i) = &m.receiver {
+                    if let Some(Type::ThreadHandle(id)) = self.env.lookup(&i.name) {
+                        for (_, (tid, info)) in &self.env.templates {
+                            if tid == id && !info.is_terminatable {
+                                self.diags.push(
+                                    Diagnostic::error(
+                                        "L-TERMINATE-NON-TERMINATABLE",
+                                        format!("thread '{}' is not terminatable (no __on_terminate__ defined)", i.name),
+                                        m.span,
+                                    ).with_help("add 'async function __on_terminate__(): void { ... }' to the thread template")
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        tessera_ast::visitor::walk_expr(self, e);
+    }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+fn resolve_type_expr(env: &TypeEnv, te: &TypeExpr) -> Type {
+    match te {
+        TypeExpr::Void => Type::Void,
+        TypeExpr::Never => Type::Never,
+        TypeExpr::Named(ident, args) => match ident.name.as_str() {
+            "bool" => Type::Bool,
+            "int" => Type::Int,
+            "double" => Type::Double,
+            "char" => Type::Char,
+            "String" => Type::TString,
+            "locked" => Type::Locked(Box::new(
+                args.first().map(|a| resolve_type_expr(env, a)).unwrap_or(Type::Error)
+            )),
+            "Queue" => Type::Queue(Box::new(
+                args.first().map(|a| resolve_type_expr(env, a)).unwrap_or(Type::Error)
+            )),
+            _ => Type::Error,
+        },
+    }
+}

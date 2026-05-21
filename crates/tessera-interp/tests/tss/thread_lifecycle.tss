@@ -1,0 +1,12 @@
+$template Worker() {
+    expose result: int;
+}
+
+$Worker() {
+    let result: int = 99;
+} := handle;
+
+handle.terminate().wait();
+
+let v: int = handle.result;
+assert(v == 99);

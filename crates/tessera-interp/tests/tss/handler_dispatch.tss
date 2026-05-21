@@ -1,0 +1,24 @@
+$template Counter() {
+    expose count: int;
+
+    async handler increment() {
+        let count: int = count + 1;
+    }
+}
+
+$Counter() {
+    let count: int = 0;
+} := ctr;
+
+let hf1: HandlerFuture<void> = ctr.increment();
+let hf2: HandlerFuture<void> = ctr.increment();
+let hf3: HandlerFuture<void> = ctr.increment();
+
+hf1.waitHandler();
+hf2.waitHandler();
+hf3.waitHandler();
+
+ctr.terminate().wait();
+
+let v: int = ctr.count;
+assert(v == 3);

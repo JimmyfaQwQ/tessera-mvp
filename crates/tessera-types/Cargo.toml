@@ -1,0 +1,9 @@
+[package]
+name = "tessera-types"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tessera-ast   = { path = "../tessera-ast" }
+indexmap      = { workspace = true }
+thiserror     = { workspace = true }
