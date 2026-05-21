@@ -33,6 +33,9 @@ pub enum RuntimeError {
     #[error("unlock not owned")]
     UnlockNotOwned { location: Span },
 
+    #[error("cannot replace expose_mutable field from outside")]
+    ExposeMutableFieldReplace { location: Span },
+
     #[error("handler dispatch error: {0}")]
     HandlerDispatch(HandlerDispatchError),
 }
@@ -49,7 +52,8 @@ impl RuntimeError {
             | RuntimeError::TypeMismatch { location, .. }
             | RuntimeError::UndefinedVariable { location, .. }
             | RuntimeError::ReentrantLock { location }
-            | RuntimeError::UnlockNotOwned { location } => *location,
+            | RuntimeError::UnlockNotOwned { location }
+            | RuntimeError::ExposeMutableFieldReplace { location } => *location,
             RuntimeError::HandlerDispatch(_) => Span::dummy(),
         }
     }

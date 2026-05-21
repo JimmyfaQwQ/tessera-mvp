@@ -126,9 +126,15 @@ impl Interpreter {
                     AssignTarget::Field(obj_expr, field) => {
                         let obj = self.eval_expr(obj_expr).await?;
                         if let Value::ThreadHandle(state) = obj {
-                            // Write expose_mutable field — value must be concurrent-safe
-                            state.expose_mutable_fields.write().await
-                                .insert(field.name.clone(), v);
+                            // Only allow writing if it is NOT an expose_mutable field —
+                            // expose_mutable exposes the value for mutation via its own
+                            // methods (.get()/.set()), but the field reference itself
+                            // cannot be replaced from outside.
+                            if state.expose_mutable_fields.read().await.contains_key(&field.name) {
+                                return Err(RuntimeError::ExposeMutableFieldReplace {
+                                    location: a.span,
+                                });
+                            }
                         }
                     }
                     AssignTarget::Index(obj_expr, idx_expr) => {

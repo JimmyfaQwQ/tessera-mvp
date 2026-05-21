@@ -75,13 +75,13 @@ $template Logger(q: Queue<String>) {
 //
 // 关键特性：
 //   expose tasksCompleted        — 只读暴露；内部写，外部读
-//   expose_mutable shared        — 可变暴露；内外均可读写（需并发安全类型）
+//   expose_mutable shared        — 可变暴露；内外均可通过对象方法读写内容，但字段引用本身不可被外部替换
 //   async handler status         — 跨线程调用，代码在 Worker 的事件循环内执行
 //   __on_terminate__             — 定义了此钩子 => terminatable
 
 $template Worker(id: int, jobs: Queue<String>, logQueue: Queue<String>, total: locked<int>) {
     expose tasksCompleted: int;
-    expose_mutable shared: locked<int>;   // 内外双向可读写，类型必须是并发安全的
+    expose_mutable shared: locked<int>;   // 外部可通过 .get()/.set() 读写内容，但不能替换字段引用本身
 
     function __on_enter__(): void {
         tasksCompleted = 0;
@@ -102,7 +102,7 @@ $template Worker(id: int, jobs: Queue<String>, logQueue: Queue<String>, total: l
         // 更新全局聚合计数（locked<int> 参数）
         let cur: int = total.get();
         total.set(cur + 1);
-        // 同时把本 worker 完成数写进 expose_mutable shared（供外部直接读写）
+        // 同时把本 worker 完成数写进 expose_mutable shared（外部可通过 .get()/.set() 读写）
         let s: int = shared.get();
         shared.set(s + 1);
         logQueue.tryPush("Worker#" + id + " 完成: " + job);
@@ -172,15 +172,16 @@ if (s3.isOk()) { println("[Main] " + s3.unwrap()); }
 // ── expose 直读：不需要任何 handler，直接拿到线程暴露的只读快照 ────────────────
 println("[Main] expose 直读 → w1.tasksCompleted = " + w1.tasksCompleted);
 
-// ── expose_mutable 外部读：读取 Worker 自己维护的 shared 计数 ─────────────────
-// expose_mutable 字段是并发安全类型，主线程可以直接读到它当前的值
+// ── expose_mutable 外部读：获取 Worker 的 shared 并通过方法读取值 ──────────────
+// expose_mutable 暴露的是并发安全对象本身（locked<int>），
+// 外部通过对象的方法（.get() / .set()）读写其内容。
+// 字段引用本身不可被外部替换（handle.field = v 是运行时错误）。
 let sharedVal: locked<int> = w1.shared;
 println("[Main] expose_mutable 外部读 → w1.shared = " + sharedVal.get());
 
-// ── expose_mutable 外部写：主线程注入一个新的 locked<int>（替换共享对象）──────
-// 这是 expose_mutable 区别于 expose 的核心：外部可以写入
-let injected: locked<int> = locked(999);
-w1.shared = injected;   // 外部写，w1.shared 换成新对象
+// ── expose_mutable 外部写：通过方法修改值（而非替换字段引用）────────────────────
+// 正确用法：调用 .set() 改变内容
+w1.shared.set(999);
 println("[Main] expose_mutable 外部写后 → w1.shared = " + w1.shared.get());
 
 
