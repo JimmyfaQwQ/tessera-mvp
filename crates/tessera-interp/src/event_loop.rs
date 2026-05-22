@@ -134,7 +134,7 @@ pub async fn run_thread_task(
             // ── Handler dispatch (inline, cooperative) ───────────────────────
             req = handler_rx.recv(), if !exclusive => {
                 if let Some(req) = req {
-                    dispatch_handler_inline(&interp, decl.as_deref(), req).await;
+                    dispatch_handler_inline(&interp, decl.as_deref(), req);
                 }
             }
 
@@ -157,8 +157,16 @@ pub async fn run_thread_task(
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-/// Execute a handler request inline and resolve its future when done.
-async fn dispatch_handler_inline(
+/// Dispatch a handler request by spawning its body as an independent local task.
+///
+/// Running the handler inline (awaiting it directly in the event loop) would
+/// block `body_fut` from being polled while the handler is executing. For
+/// handlers that wait on state set by the body (e.g. `readLine` busy-waits on
+/// `line_available` which is set by `run()`), this causes a deadlock. Spawning
+/// the handler as a `spawn_local` task lets both the body and the handler be
+/// scheduled cooperatively within the same `LocalSet`, so each can make progress
+/// when the other yields.
+fn dispatch_handler_inline(
     interp: &Interpreter,
     decl: Option<&ThreadTemplateDecl>,
     req: HandlerRequest,
@@ -171,10 +179,14 @@ async fn dispatch_handler_inline(
             let _ = req.result_tx.send(HandlerOutcome::Dispatched(TesseraFuture::new(exec_rx)));
 
             let h = h.clone();
-            match interp.exec_handler_body(&h, req.args).await {
-                Ok(v)  => { let _ = exec_tx.send(FutureOutcome::Ok(v)); }
-                Err(e) => { let _ = exec_tx.send(FutureOutcome::Failed(e.to_string())); }
-            }
+            let interp = interp.clone();
+            let args = req.args;
+            tokio::task::spawn_local(async move {
+                match interp.exec_handler_body(&h, args).await {
+                    Ok(v)  => { let _ = exec_tx.send(FutureOutcome::Ok(v)); }
+                    Err(e) => { let _ = exec_tx.send(FutureOutcome::Failed(e.to_string())); }
+                }
+            });
         }
         None => {
             let _ = req.result_tx.send(HandlerOutcome::DispatchFailed(

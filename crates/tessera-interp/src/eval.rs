@@ -547,8 +547,15 @@ impl Interpreter {
                     return Ok(Value::Void); // unreachable
                 }
                 "getchar" => {
-                    let mut rx = stdin_receiver().lock().await;
-                    let ch = rx.recv().await.flatten();
+                    // Release the lock before yielding so the mutex is not held
+                    // across an unrelated await point.
+                    let ch = {
+                        let mut rx = stdin_receiver().lock().await;
+                        rx.recv().await.flatten()
+                    };
+                    // Yield after every char so other tasks (e.g. handlers) get
+                    // a chance to run even when the stdin channel has data buffered.
+                    tokio::task::yield_now().await;
                     return Ok(match ch {
                         Some(c) => Value::Option(Some(Box::new(Value::Char(c)))),
                         None => Value::Option(None),

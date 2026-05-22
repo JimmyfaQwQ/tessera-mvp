@@ -21,6 +21,7 @@ $template reader() {
             let c: char = ch.unwrap();
             if (c == '\n') {
                 #exclusive {
+                    println("enque: " + buf);
                     line.enqueue(buf);
                     line_available = true;
                     buf = "";
@@ -39,9 +40,15 @@ $template reader() {
 
     // 跨线程调用：从队列取一行，队列空时将 line_available 置 false
     async handler readLine(): Option<String> {
-        let result: Option<String> = line.tryPop();
-        if (result.isNone()) {
-            line_available = false;
+        while (!line_available) {
+            asleep(10);
+        }
+        let result: Option<String> = None;
+        #exclusive {
+            result = line.dequeue();
+            if (line.isEmpty()) {
+                line_available = false;
+            }
         }
         return result;
     }
@@ -52,9 +59,6 @@ $template dispatcher(reader_handle: thread<reader>, threads: List<thread<worker>
         let running: bool = true;
         let worker_index: int = 0;
         while (running) {
-            while (!reader_handle.line_available) {
-                asleep(10);
-            }
             let res: Result<Option<String>, HandlerDispatchError> = reader_handle.readLine().waitHandler();
             if (res.isOk()) {
                 let opt: Option<String> = res.unwrap();
