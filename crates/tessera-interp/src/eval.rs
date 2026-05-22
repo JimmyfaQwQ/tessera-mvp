@@ -48,7 +48,7 @@ use async_recursion::async_recursion;
 use tessera_ast::*;
 use tessera_runtime::{
     Value, RuntimeError,
-    TesseraLocked, TesseraQueue, FutureOutcome, ThreadState,
+    TesseraLocked, TesseraQueue, TesseraSignal, TesseraContract, FutureOutcome, ThreadState,
     HandlerRequest,
 };
 use crate::env::Env;
@@ -561,6 +561,12 @@ impl Interpreter {
                         None => Value::Option(None),
                     });
                 }
+                "signal" => {
+                    return Ok(Value::Signal(Arc::new(TesseraSignal::new())));
+                }
+                "contract" => {
+                    return Ok(Value::Contract(Arc::new(TesseraContract::new())));
+                }
                 name => {
                     // Look up user-defined function
                     let func = self.0.func_table.borrow().get(name).cloned();
@@ -700,6 +706,19 @@ impl Interpreter {
                 Ok(Value::Void)
             }
 
+            // signal
+            ("raise",       Value::Signal(s)) => { s.raise();    Ok(Value::Void) }
+            ("reset",       Value::Signal(s)) => { s.reset();    Ok(Value::Void) }
+            ("isRaised",    Value::Signal(s)) => Ok(Value::Bool(s.is_raised())),
+            ("wait",        Value::Signal(s)) => { s.wait().await; Ok(Value::Void) }
+            ("awaitSignal", Value::Signal(s)) => { s.wait().await; Ok(Value::Void) }
+
+            // contract
+            ("fulfill",        Value::Contract(c)) => { c.fulfill(); Ok(Value::Void) }
+            ("isPending",      Value::Contract(c)) => Ok(Value::Bool(c.is_pending())),
+            ("wait",           Value::Contract(c)) => { c.wait().await; Ok(Value::Void) }
+            ("awaitContract",  Value::Contract(c)) => { c.wait().await; Ok(Value::Void) }
+
             _ => Ok(Value::Void),
         }
     }
@@ -749,6 +768,10 @@ impl Interpreter {
                 Ok(v)  => Ok(v),
                 Err(e) => Err(RuntimeError::Panic { message: e.to_string(), location: a.span }),
             },
+            // `await s` is equivalent to s.awaitSignal() — spec §11.3.5
+            Value::Signal(s) => { s.wait().await; Ok(Value::Void) }
+            // `await c` is equivalent to c.awaitContract() — spec §12.4.4
+            Value::Contract(c) => { c.wait().await; Ok(Value::Void) }
             other => Ok(other),
         }
     }

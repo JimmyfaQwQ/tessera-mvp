@@ -168,5 +168,69 @@
       "}"
     ],
     "description": "Option<T> bind and isNone() check"
+  },
+  "signal-let": {
+    "prefix": "signal",
+    "body": [
+      "let ${1:sig}: signal = signal();"
+    ],
+    "description": "Declare a signal (broadcast manual-reset event)"
+  },
+  "signal-expose": {
+    "prefix": "expose_signal",
+    "body": [
+      "expose_mutable ${1:name}: signal;",
+      "",
+      "function __on_enter__(): void {",
+      "\t${1:name} = signal();",
+      "}"
+    ],
+    "description": "expose_mutable field of type signal with initialiser"
+  },
+  "signal-raise": {
+    "prefix": "raise",
+    "body": [
+      "${1:sig}.raise();"
+    ],
+    "description": "Raise a signal"
+  },
+  "signal-await": {
+    "prefix": "await-signal",
+    "body": [
+      "await ${1:sig};"
+    ],
+    "description": "Await a signal (async context)"
+  },
+  "contract-let": {
+    "prefix": "contract",
+    "body": [
+      "let ${1:c}: contract = contract();"
+    ],
+    "description": "Declare a contract (auto-reset single-waiter event)"
+  },
+  "contract-expose": {
+    "prefix": "expose_contract",
+    "body": [
+      "expose_mutable ${1:name}: contract;",
+      "",
+      "function __on_enter__(): void {",
+      "\t${1:name} = contract();",
+      "}"
+    ],
+    "description": "expose_mutable field of type contract with initialiser"
+  },
+  "contract-fulfill": {
+    "prefix": "fulfill",
+    "body": [
+      "${1:c}.fulfill();"
+    ],
+    "description": "Fulfill a contract"
+  },
+  "contract-await": {
+    "prefix": "await-contract",
+    "body": [
+      "await ${1:c};"
+    ],
+    "description": "Await a contract (async context)"
   }
 }

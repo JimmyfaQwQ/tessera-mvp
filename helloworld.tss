@@ -1,4 +1,4 @@
-@template main_scope(worker_count: int) {
+@template with_workers(worker_count: int) {
     define workers: List<thread<worker>>;
 
     function __on_enter__(): void {
@@ -44,8 +44,8 @@ $template reader() {
                 #exclusive {
                     line.enqueue(buf);
                     line_available = true;
-                    buf = "";
                 }
+                buf = "";
             } else if (c == '\r') {
                 // skip carriage return (Windows \r\n line endings)
             } else {
@@ -75,22 +75,21 @@ $template reader() {
 
 $template dispatcher(reader_handle: thread<reader>, threads: List<thread<worker>>) {
     async handler run(): void {
-        let running: bool = true;
         let worker_index: int = 0;
-        while (running) {
+        while (true) {
             let res: Result<Option<String>, HandlerDispatchError> = reader_handle.readLine().waitHandler();
-            if (res.isOk()) {
-                let opt: Option<String> = res.unwrap();
-                if (opt.isSome()) {
-                    let text: String = opt.unwrap();
-                    if (text == "quit") {
-                        running = false;
-                    } else {
-                        let w: thread<worker> = threads[worker_index];
-                        w.echo(text).waitHandler();
-                        worker_index = (worker_index + 1) % threads.length();
-                    }
+            if (res.isErr()) {
+                break;
+            }
+            let opt: Option<String> = res.unwrap();
+            if (opt.isSome()) {
+                let text: String = opt.unwrap();
+                if (text == "quit") {
+                    break;
                 }
+                let w: thread<worker> = threads[worker_index];
+                w.echo(text).waitHandler();
+                worker_index = (worker_index + 1) % threads.length();
             }
         }
     }
@@ -106,7 +105,7 @@ $template worker(name: String) {
     }
 }
 
-@main_scope(3) {
+@with_workers(3) {
     println("Echo server — 输入 quit 退出");
 
     $reader() {

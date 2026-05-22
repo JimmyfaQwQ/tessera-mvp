@@ -140,6 +140,8 @@ impl<'e> TypeChecker<'e> {
                 let inner = args.first().map(|a| self.resolve_type(a)).unwrap_or(Type::Error);
                 Type::Queue(Box::new(inner))
             }
+            "signal" => Type::Signal,
+            "contract" => Type::Contract,
             "thread" => {
                 // thread<TemplateName> — the type arg names the template
                 if let Some(TypeExpr::Named(ident, _)) = args.first() {
@@ -302,6 +304,8 @@ impl<'e> TypeChecker<'e> {
                         "keepalive" => return Type::Never,
                         "getchar"   => return Type::Option(Box::new(Type::Char)),
                         "print" | "println" | "asleep" => return Type::Void,
+                        "signal"   => return Type::Signal,
+                        "contract" => return Type::Contract,
                         _ => {}
                     }
                 }
@@ -321,6 +325,8 @@ impl<'e> TypeChecker<'e> {
                 let inner = self.check_expr(&a.expr);
                 match inner {
                     Type::Future(t) => *t,
+                    // `await s` on a signal/contract resolves to void (spec §11.3.5 / §12.4.4)
+                    Type::Signal | Type::Contract => Type::Void,
                     _ => {
                         if !matches!(self.env.current_func, FuncContext::AsyncFunction { .. }) {
                             self.env.error("await can only be used in async functions", a.span);
@@ -396,9 +402,18 @@ impl<'e> TypeChecker<'e> {
             "wait" => {
                 match recv_ty {
                     Type::Future(inner) => *inner,
+                    Type::Signal | Type::Contract => Type::Void,
                     _ => Type::Error,
                 }
             }
+            // signal methods
+            "raise" | "reset" => Type::Void,
+            "isRaised" => Type::Bool,
+            "awaitSignal" => Type::Void,
+            // contract methods
+            "fulfill" => Type::Void,
+            "isPending" => Type::Bool,
+            "awaitContract" => Type::Void,
             "waitHandler" | "awaitHandler" => {
                 match recv_ty {
                     Type::HandlerFuture(inner) => {

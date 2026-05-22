@@ -3,13 +3,14 @@ use std::rc::Rc;
 use std::sync::Arc;
 use indexmap::IndexMap;
 
-use crate::{TesseraLocked, TesseraQueue, TesseraFuture, TesseraHandlerFuture, ThreadState};
+use crate::{TesseraLocked, TesseraQueue, TesseraFuture, TesseraHandlerFuture, ThreadState,
+            TesseraSignal, TesseraContract};
 
 /// Runtime value representation.
 ///
 /// List/Map use Rc<RefCell<...>> because the spec forbids cross-thread capture
 /// of non-concurrent-safe values; they are therefore single-threaded.
-/// locked<T>, Queue<T>, and ThreadHandle use Arc for safe cross-thread sharing.
+/// locked<T>, Queue<T>, signal, contract, and ThreadHandle use Arc for safe cross-thread sharing.
 #[derive(Clone, Debug)]
 pub enum Value {
     Bool(bool),
@@ -27,6 +28,8 @@ pub enum Value {
 
     Locked(Arc<TesseraLocked>),
     Queue(Arc<TesseraQueue>),
+    Signal(Arc<TesseraSignal>),
+    Contract(Arc<TesseraContract>),
 
     Future(TesseraFuture),
     HandlerFuture(TesseraHandlerFuture),
@@ -71,6 +74,8 @@ impl Value {
             Value::Result(_) => "Result",
             Value::Locked(_) => "locked",
             Value::Queue(_) => "Queue",
+            Value::Signal(_) => "signal",
+            Value::Contract(_) => "contract",
             Value::Future(_) => "Future",
             Value::HandlerFuture(_) => "HandlerFuture",
             Value::ThreadHandle(_) => "ThreadHandle",

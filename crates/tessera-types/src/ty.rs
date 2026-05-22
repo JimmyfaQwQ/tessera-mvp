@@ -21,6 +21,11 @@ pub enum Type {
     Locked(Box<Type>),
     Queue(Box<Type>),
 
+    /// Broadcast manual-reset event.
+    Signal,
+    /// Auto-reset single-waiter (FIFO) event.
+    Contract,
+
     ThreadHandle(TemplateId),
 
     /// Placeholder for recovery.
@@ -29,7 +34,7 @@ pub enum Type {
 
 impl Type {
     pub fn is_concurrent_safe(&self) -> bool {
-        matches!(self, Type::Locked(_) | Type::Queue(_))
+        matches!(self, Type::Locked(_) | Type::Queue(_) | Type::Signal | Type::Contract)
     }
 
     pub fn is_numeric(&self) -> bool {
@@ -55,6 +60,8 @@ impl std::fmt::Display for Type {
             Type::HandlerFuture(t) => write!(f, "HandlerFuture<{t}>"),
             Type::Locked(t) => write!(f, "locked<{t}>"),
             Type::Queue(t) => write!(f, "Queue<{t}>"),
+            Type::Signal => write!(f, "signal"),
+            Type::Contract => write!(f, "contract"),
             Type::ThreadHandle(id) => write!(f, "ThreadHandle({id})"),
             Type::Error => write!(f, "<error>"),
         }
