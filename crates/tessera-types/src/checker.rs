@@ -38,9 +38,16 @@ impl<'e> TypeChecker<'e> {
         let name = d.name.as_ref().map(|i| i.name.clone()).unwrap_or_default();
         if name.is_empty() { return; }
         let params = d.params.iter().map(|p| (p.name.name.clone(), self.resolve_type(&p.ty))).collect();
+        let mut define_fields = IndexMap::new();
+        for m in &d.members {
+            if let ScopeTemplateMember::Define(e) = m {
+                define_fields.insert(e.name.name.clone(), self.resolve_type(&e.ty));
+            }
+        }
         let info = TemplateInfo {
             kind: TemplateKind::Scope,
             params,
+            define_fields,
             expose_fields: IndexMap::new(),
             handlers: IndexMap::new(),
             is_terminatable: false,
@@ -76,7 +83,7 @@ impl<'e> TypeChecker<'e> {
             }
         }
 
-        let info = TemplateInfo { kind: TemplateKind::Thread, params, expose_fields, handlers, is_terminatable };
+        let info = TemplateInfo { kind: TemplateKind::Thread, params, define_fields: IndexMap::new(), expose_fields, handlers, is_terminatable };
         self.env.register_template(name, info);
     }
 
@@ -201,7 +208,37 @@ impl<'e> TypeChecker<'e> {
             Stmt::ThreadSpawn(ts) => self.check_thread_spawn(ts),
             Stmt::ScopeBlock(sb) => {
                 for arg in &sb.args { self.check_expr(arg); }
-                self.check_block(&sb.body);
+                // Collect template params + define fields before mutably borrowing env.
+                let scope_bindings: Vec<(String, Type)> = match &sb.template {
+                    ScopeTemplateRef::Named(ident) => {
+                        if let Some((_id, info)) = self.env.lookup_template(&ident.name) {
+                            info.params.iter()
+                                .map(|(k, v)| (k.clone(), v.clone()))
+                                .chain(info.define_fields.iter().map(|(k, v)| (k.clone(), v.clone())))
+                                .collect()
+                        } else {
+                            vec![]
+                        }
+                    }
+                    ScopeTemplateRef::Anonymous(decl) => {
+                        let mut b: Vec<(String, Type)> = decl.params.iter()
+                            .map(|p| (p.name.name.clone(), self.resolve_type(&p.ty)))
+                            .collect();
+                        for m in &decl.members {
+                            if let ScopeTemplateMember::Define(e) = m {
+                                b.push((e.name.name.clone(), self.resolve_type(&e.ty)));
+                            }
+                        }
+                        b
+                    }
+                };
+                // Push scope and inject bindings so the body can see params + define fields.
+                self.env.push_scope();
+                for (name, ty) in scope_bindings {
+                    self.env.define(name, ty);
+                }
+                for s in &sb.body.stmts { self.check_stmt(s); }
+                self.env.pop_scope();
             }
             Stmt::ExclusiveBlock(eb) => {
                 let old = self.env.in_exclusive;

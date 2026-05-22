@@ -83,6 +83,8 @@ pub struct ExposeInfo {
 pub struct TemplateInfo {
     pub kind: TemplateKind,
     pub params: Vec<(String, Type)>,
+    /// Fields declared with `define` in a scope template — visible to the scope body.
+    pub define_fields: IndexMap<String, Type>,
     pub expose_fields: IndexMap<String, ExposeInfo>,
     pub handlers: IndexMap<String, HandlerSig>,
     pub is_terminatable: bool,

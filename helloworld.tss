@@ -1,8 +1,29 @@
+@template main_scope(worker_count: int) {
+    define workers: List<thread<worker>>;
+
+    function __on_enter__(): void {
+        workers = List<thread<worker>>();
+        for (let i: int = 0; i < worker_count; i = i + 1) {
+            $worker("Worker-" + i) {
+                await keepalive();
+            } := w;
+            workers.push(w);
+        }
+    }
+    function __on_exit__(): void {
+        for (let i = 0; i < workers.length(); i = i + 1) {
+            workers[i].terminate().wait();
+        }
+    }
+}
+
 $template reader() {
     define line_available: bool;
+    define line: Queue<String>;
 
     function __on_enter__(): void {
         line_available = false;
+        line = Queue<String>();
     }
 
     async function run(): void {
@@ -21,7 +42,6 @@ $template reader() {
             let c: char = ch.unwrap();
             if (c == '\n') {
                 #exclusive {
-                    println("enque: " + buf);
                     line.enqueue(buf);
                     line_available = true;
                     buf = "";
@@ -38,7 +58,6 @@ $template reader() {
         line_available = false;
     }
 
-    // 跨线程调用：从队列取一行，队列空时将 line_available 置 false
     async handler readLine(): Option<String> {
         while (!line_available) {
             asleep(10);
@@ -81,27 +100,24 @@ $template worker(name: String) {
     async handler echo(msg: String): void {
         println("[" + name + "] " + msg);
     }
+
+    async function __on_terminate__(): void {
+        println("[" + name + "] Terminating");
+    }
 }
 
-println("Echo server — 输入 quit 退出");
+@main_scope(3) {
+    println("Echo server — 输入 quit 退出");
 
-$reader() {
-    let line: Queue<String> = Queue<String>();
-    await run();
-} := r;
+    $reader() {
+        await run();
+    } := r;
 
-let workers: List<thread<worker>> = List<thread<worker>>();
-for (let i: int = 0; i < 3; i = i + 1) {
-    $worker("Worker-" + i) {
+    $dispatcher(r, workers) {
         await keepalive();
-    } := w;
-    workers.push(w);
+    } := d;
+
+    d.run().waitHandler();
+
+    r.terminate().wait();
 }
-
-$dispatcher(r, workers) {
-    await keepalive();
-} := d;
-
-d.run().waitHandler();
-
-r.terminate().wait();
