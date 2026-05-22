@@ -48,6 +48,7 @@ pub enum ScopeTemplateMember {
     OnEnter(FuncDef),
     OnExit(FuncDef),
     MemberFunc(FuncDef),
+    Define(ExposeDecl),
 }
 
 // ── Thread template ($template) ──────────────────────────────────────────────
@@ -70,6 +71,7 @@ pub enum ThreadTemplateMember {
     Handler(HandlerDef),
     Expose(ExposeDecl),
     ExposeMutable(ExposeDecl),
+    Define(ExposeDecl),
 }
 
 #[derive(Debug, Clone)]

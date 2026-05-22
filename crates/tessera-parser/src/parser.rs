@@ -146,6 +146,11 @@ impl Parser {
     }
 
     fn parse_scope_template_member(&mut self) -> ScopeTemplateMember {
+        if matches!(self.peek(), Some(Token::KwDefine)) {
+            self.advance();
+            let decl = self.parse_expose_decl();
+            return ScopeTemplateMember::Define(decl);
+        }
         let is_async = self.eat(&Token::KwAsync);
         self.expect(&Token::KwFunction);
         let name = self.expect_ident();
@@ -193,6 +198,11 @@ impl Parser {
                 self.advance();
                 let decl = self.parse_expose_decl();
                 ThreadTemplateMember::ExposeMutable(decl)
+            }
+            Some(Token::KwDefine) => {
+                self.advance();
+                let decl = self.parse_expose_decl();
+                ThreadTemplateMember::Define(decl)
             }
             Some(Token::KwAsync) => {
                 self.advance();

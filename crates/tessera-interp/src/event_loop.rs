@@ -39,7 +39,7 @@ pub async fn run_thread_task(
                 interp.0.func_table.borrow_mut().insert(f.name.name.clone(), Arc::new(f.clone()));
             }
         }
-        // Pre-define expose / expose_mutable fields with type-default values.
+        // Pre-define expose / expose_mutable / define fields with type-default values.
         for m in &d.members {
             match m {
                 ThreadTemplateMember::Expose(e) => {
@@ -51,6 +51,17 @@ pub async fn run_thread_task(
                     interp.0.expose_mutable_field_names.borrow_mut().insert(e.name.name.clone());
                     let default = default_value_for_type(&e.ty);
                     interp.0.env.borrow_mut().define(e.name.name.clone(), default);
+                }
+                ThreadTemplateMember::Define(e) => {
+                    let val = if let Some(init) = &e.initializer {
+                        match interp.eval_expr(init).await {
+                            Ok(v) => v,
+                            Err(_) => default_value_for_type(&e.ty),
+                        }
+                    } else {
+                        default_value_for_type(&e.ty)
+                    };
+                    interp.0.env.borrow_mut().define(e.name.name.clone(), val);
                 }
                 _ => {}
             }
@@ -194,8 +205,8 @@ fn drain_handlers(rx: &mut mpsc::Receiver<HandlerRequest>, err: HandlerDispatchE
     }
 }
 
-/// Return a type-appropriate zero/default value for an expose field.
-fn default_value_for_type(ty: &TypeExpr) -> Value {
+/// Return a type-appropriate zero/default value for an expose/define field.
+pub fn default_value_for_type(ty: &TypeExpr) -> Value {
     match ty {
         TypeExpr::Named(ident, _) => match ident.name.as_str() {
             "int"    => Value::Int(0),

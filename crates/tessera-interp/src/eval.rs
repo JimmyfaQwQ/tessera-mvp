@@ -316,6 +316,17 @@ impl Interpreter {
                 let v = self.eval_expr(arg_expr).await?;
                 self.0.env.borrow_mut().define(param.name.name.clone(), v);
             }
+            // Initialize define fields before __on_enter__
+            for m in &decl.members {
+                if let ScopeTemplateMember::Define(e) = m {
+                    let val = if let Some(init) = &e.initializer {
+                        self.eval_expr(init).await.unwrap_or_else(|_| crate::event_loop::default_value_for_type(&e.ty))
+                    } else {
+                        crate::event_loop::default_value_for_type(&e.ty)
+                    };
+                    self.0.env.borrow_mut().define(e.name.name.clone(), val);
+                }
+            }
             // Run __on_enter__
             if let Some(on_enter) = find_scope_hook(decl, "__on_enter__") {
                 self.exec_block(&on_enter.body).await?;

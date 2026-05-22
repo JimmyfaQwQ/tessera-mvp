@@ -106,6 +106,10 @@
           "match": "\\bexpose\\b"
         },
         {
+          "name": "keyword.declaration.define.tessera",
+          "match": "\\bdefine\\b"
+        },
+        {
           "name": "keyword.declaration.variable.tessera",
           "match": "\\blet\\b"
         }

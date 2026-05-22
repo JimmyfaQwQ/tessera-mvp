@@ -1,5 +1,5 @@
 $template reader() {
-    expose line_available: bool;
+    define line_available: bool;
 
     function __on_enter__(): void {
         line_available = false;

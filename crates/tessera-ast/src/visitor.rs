@@ -29,6 +29,7 @@ pub fn walk_scope_template_decl<V: Visitor>(v: &mut V, d: &ScopeTemplateDecl) {
         match m {
             ScopeTemplateMember::OnEnter(f) | ScopeTemplateMember::OnExit(f)
             | ScopeTemplateMember::MemberFunc(f) => v.visit_func_def(f),
+            ScopeTemplateMember::Define(e) => v.visit_expose_decl(e, false),
         }
     }
 }
@@ -43,6 +44,7 @@ pub fn walk_thread_template_decl<V: Visitor>(v: &mut V, d: &ThreadTemplateDecl) 
             ThreadTemplateMember::Handler(h) => v.visit_handler_def(h),
             ThreadTemplateMember::Expose(e) => v.visit_expose_decl(e, false),
             ThreadTemplateMember::ExposeMutable(e) => v.visit_expose_decl(e, true),
+            ThreadTemplateMember::Define(e) => v.visit_expose_decl(e, false),
         }
     }
 }

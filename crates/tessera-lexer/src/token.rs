@@ -40,6 +40,9 @@ pub enum Token {
     #[token("expose")]
     KwExpose,
 
+    #[token("define")]
+    KwDefine,
+
     #[token("let")]
     KwLet,
 
