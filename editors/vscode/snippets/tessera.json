@@ -151,6 +151,13 @@
     ],
     "description": "Result<T, E> bind and isOk() check"
   },
+  "thread-param": {
+    "prefix": "thread<",
+    "body": [
+      "thread<${1:TemplateName}>"
+    ],
+    "description": "Thread handle type annotation: thread<TemplateName>"
+  },
   "option-check": {
     "prefix": "option",
     "body": [

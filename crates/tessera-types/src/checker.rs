@@ -133,8 +133,17 @@ impl<'e> TypeChecker<'e> {
                 let inner = args.first().map(|a| self.resolve_type(a)).unwrap_or(Type::Error);
                 Type::Queue(Box::new(inner))
             }
+            "thread" => {
+                // thread<TemplateName> — the type arg names the template
+                if let Some(TypeExpr::Named(ident, _)) = args.first() {
+                    if let Some((id, _)) = self.env.lookup_template(&ident.name) {
+                        return Type::ThreadHandle(id);
+                    }
+                }
+                Type::Error
+            }
             other => {
-                // Could be a thread handle reference
+                // Bare template name used directly as a type (legacy / shorthand)
                 if let Some((id, _)) = self.env.lookup_template(other) {
                     Type::ThreadHandle(id)
                 } else {

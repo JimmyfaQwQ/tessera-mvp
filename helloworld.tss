@@ -1,0 +1,103 @@
+$template reader() {
+    expose line_available: bool;
+
+    function __on_enter__(): void {
+        line_available = false;
+    }
+
+    // 逐字符读 stdin，按行切割后推入 line 队列
+    async function run(): void {
+        let buf: String = "";
+        while (true) {
+            let ch: Option<char> = getchar();
+            if (ch.isNone()) {
+                // EOF：把剩余缓冲区作为最后一行
+                if (buf != "") {
+                    #exclusive {
+                        line.enqueue(buf);
+                        line_available = true;
+                    }
+                }
+                break;
+            }
+            let c: char = ch.unwrap();
+            if (c == '\n') {
+                #exclusive {
+                    line.enqueue(buf);
+                    line_available = true;
+                    buf = "";
+                }
+            } else if (c == '\r') {
+                // skip carriage return (Windows \r\n line endings)
+            } else {
+                buf = buf + c;
+            }
+        }
+    }
+
+    async function __on_terminate__(): void {
+        line_available = false;
+    }
+
+    // 跨线程调用：从队列取一行，队列空时将 line_available 置 false
+    async handler readLine(): Option<String> {
+        let result: Option<String> = line.tryPop();
+        if (result.isNone()) {
+            line_available = false;
+        }
+        return result;
+    }
+}
+
+$template dispatcher(List<thread<worker>> threads) {
+    async function dispatch(): void {
+        let idx: int = 0;
+        while (true) {
+            let t: Thread = threads[idx];
+            let res: Result<(), HandlerDispatchError> = await t.dispatch();
+            if (res.isErr()) {
+                println("[dispatcher] 线程 " + t.name + " 调度失败：" + res.unwrapErr().toString());
+            }
+            idx = (idx + 1) % threads.size();
+        }
+    }
+}
+
+$template worker() {
+    async function run(): void {
+        while (true) {
+            asleep(1000);
+        }
+    }
+}
+
+println("Echo server — 输入 quit 退出");
+
+// line 定义在线程体而非 __on_enter__，确保 run() 和 readLine handler 都能访问
+$reader() {
+    let line: Queue<String> = Queue<String>();
+    await run();
+} := r;
+
+let running: bool = true;
+while (running) {
+    // 轮询直到有完整行就绪
+    while (!r.line_available) {
+        asleep(10);
+    }
+    let res: Result<Option<String>, HandlerDispatchError> = r.readLine().waitHandler();
+    if (res.isOk()) {
+        let opt: Option<String> = res.unwrap();
+        if (opt.isSome()) {
+            let text: String = opt.unwrap();
+            if (text == "quit") {
+                running = false;
+            } else {
+                println("echo: " + text);
+            }
+        }
+    }
+}
+
+r.terminate().wait();
+println("bye!");

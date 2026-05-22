@@ -1,7 +1,48 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+
+use tokio::sync::{mpsc, Mutex as AsyncMutex};
+
+/// A single background OS thread reads stdin and sends chars into this channel.
+/// Using std::thread::spawn (not spawn_blocking) means tokio does not wait for
+/// it on shutdown, so the process can exit cleanly without an extra keypress.
+fn stdin_receiver() -> &'static AsyncMutex<mpsc::Receiver<Option<char>>> {
+    static INSTANCE: OnceLock<AsyncMutex<mpsc::Receiver<Option<char>>>> = OnceLock::new();
+    INSTANCE.get_or_init(|| {
+        let (tx, rx) = mpsc::channel(256);
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let stdin = std::io::stdin();
+            let mut handle = stdin.lock();
+            let mut first = [0u8; 1];
+            loop {
+                match handle.read(&mut first) {
+                    Ok(0) | Err(_) => { let _ = tx.blocking_send(None); break; }
+                    Ok(_) => {
+                        let byte = first[0];
+                        let seq_len = if byte < 0x80 { 1 }
+                                      else if byte < 0xE0 { 2 }
+                                      else if byte < 0xF0 { 3 }
+                                      else { 4 };
+                        let mut buf = [0u8; 4];
+                        buf[0] = byte;
+                        if seq_len > 1 && handle.read_exact(&mut buf[1..seq_len]).is_err() {
+                            let _ = tx.blocking_send(None);
+                            break;
+                        }
+                        let ch = std::str::from_utf8(&buf[..seq_len])
+                            .ok()
+                            .and_then(|s| s.chars().next());
+                        if tx.blocking_send(ch).is_err() { break; }
+                    }
+                }
+            }
+        });
+        AsyncMutex::new(rx)
+    })
+}
 
 use async_recursion::async_recursion;
 use tessera_ast::*;
@@ -334,6 +375,9 @@ impl Interpreter {
             handler_rx,
         ));
 
+        // Yield to let the spawned thread run __on_enter__ before the parent continues.
+        tokio::task::yield_now().await;
+
         if let HandleBind::Bind(name) = &ts.handle_bind {
             self.0.env.borrow_mut().define(
                 name.name.clone(),
@@ -483,6 +527,14 @@ impl Interpreter {
                         tokio::time::sleep(std::time::Duration::from_millis(ms_u64)).await;
                     }
                     return Ok(Value::Void);
+                }
+                "getchar" => {
+                    let mut rx = stdin_receiver().lock().await;
+                    let ch = rx.recv().await.flatten();
+                    return Ok(match ch {
+                        Some(c) => Value::Option(Some(Box::new(Value::Char(c)))),
+                        None => Value::Option(None),
+                    });
                 }
                 name => {
                     // Look up user-defined function

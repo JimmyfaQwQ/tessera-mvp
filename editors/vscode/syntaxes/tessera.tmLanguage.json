@@ -125,7 +125,7 @@
     },
     "builtin-types": {
       "name": "support.class.builtin.tessera",
-      "match": "\\b(Queue|Option|Result|locked|List|Map|HandlerFuture|HandlerDispatchError)\\b"
+      "match": "\\b(Queue|Option|Result|locked|List|Map|HandlerFuture|HandlerDispatchError|thread)\\b"
     },
     "boolean-literals": {
       "name": "constant.language.boolean.tessera",
