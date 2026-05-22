@@ -279,6 +279,8 @@ fn resolve_type_expr(env: &TypeEnv, te: &TypeExpr) -> Type {
             "Queue" => Type::Queue(Box::new(
                 args.first().map(|a| resolve_type_expr(env, a)).unwrap_or(Type::Error)
             )),
+            "signal" => Type::Signal,
+            "contract" => Type::Contract,
             _ => Type::Error,
         },
     }

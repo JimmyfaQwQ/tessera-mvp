@@ -75,7 +75,6 @@ $template reader() {
 
 $template dispatcher(reader_handle: thread<reader>, threads: List<thread<worker>>) {
     async handler run(): void {
-        let worker_index: int = 0;
         while (true) {
             let res: Result<Option<String>, HandlerDispatchError> = reader_handle.readLine().waitHandler();
             if (res.isErr()) {
@@ -87,17 +86,36 @@ $template dispatcher(reader_handle: thread<reader>, threads: List<thread<worker>
                 if (text == "quit") {
                     break;
                 }
-                let w: thread<worker> = threads[worker_index];
-                w.echo(text).waitHandler();
-                worker_index = (worker_index + 1) % threads.length();
+                let assigned: bool = false;
+                for (let i = 0; i < threads.length(); i = i + 1) {
+                    let worker_thread: thread<worker> = threads[i];
+                    if (worker_thread.available.isRaised()) {
+                        worker_thread.available.reset();
+                        worker_thread.echo(text);
+                        assigned = true;
+                        break;
+                    }
+                }
+                if (!assigned) {
+                    println("[Dispatcher] No available worker for: " + text);
+                }
             }
         }
     }
 }
 
 $template worker(name: String) {
+    expose_mutable available: signal;
+
+    function __on_enter__(): void {
+        available = signal();
+        available.raise();
+    }
+
     async handler echo(msg: String): void {
         println("[" + name + "] " + msg);
+        await asleep(1000);
+        available.raise();
     }
 
     async function __on_terminate__(): void {

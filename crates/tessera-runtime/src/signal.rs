@@ -8,6 +8,10 @@ use tokio::sync::watch;
 /// - Concurrent-safe: can be shared across Tessera threads via `expose_mutable`.
 pub struct TesseraSignal {
     tx: watch::Sender<bool>,
+    // Keep one receiver alive so that send() always has a subscriber and
+    // actually stores the new value.  Without this, send() returns Err when
+    // there are no external waiters and the stored value is never updated.
+    _keep: watch::Receiver<bool>,
 }
 
 // watch::Sender is Send + Sync, so TesseraSignal is too.
@@ -19,8 +23,8 @@ impl std::fmt::Debug for TesseraSignal {
 
 impl TesseraSignal {
     pub fn new() -> Self {
-        let (tx, _rx) = watch::channel(false);
-        Self { tx }
+        let (tx, _keep) = watch::channel(false);
+        Self { tx, _keep }
     }
 
     /// Atomically set signal to raised; wakes all waiters.
