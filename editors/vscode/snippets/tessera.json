@@ -1,0 +1,165 @@
+{
+  "$template": {
+    "prefix": "$template",
+    "body": [
+      "\\$template ${1:Name}(${2:params}) {",
+      "\texpose ${3:field}: ${4:Type};",
+      "",
+      "\tfunction __on_enter__(): void {",
+      "\t\t${5:// initialise fields}",
+      "\t}",
+      "",
+      "\tfunction __on_exit__(): void {",
+      "\t\t${6:// cleanup}",
+      "\t}",
+      "",
+      "\tasync function __on_terminate__(): void {",
+      "\t\t${7:// graceful shutdown}",
+      "\t}",
+      "",
+      "\tasync function run(): void {",
+      "\t\t$0",
+      "\t}",
+      "}"
+    ],
+    "description": "Thread template skeleton ($template) with lifecycle hooks"
+  },
+  "@template": {
+    "prefix": "@template",
+    "body": [
+      "@template ${1:Name}(${2:params}) {",
+      "\tfunction __on_enter__(): void {",
+      "\t\t${3:// on enter}",
+      "\t}",
+      "\tfunction __on_exit__(): void {",
+      "\t\t${4:// on exit}",
+      "\t}",
+      "}"
+    ],
+    "description": "Scope template skeleton (@template) with lifecycle hooks"
+  },
+  "anonymous-thread": {
+    "prefix": "${}",
+    "body": [
+      "\\${ ${0:// thread body} };"
+    ],
+    "description": "Anonymous thread shorthand ${ ... }"
+  },
+  "thread-instantiation": {
+    "prefix": "thread",
+    "body": [
+      "\\$${1:TemplateName}(${2:args}) {",
+      "\tawait run();",
+      "} := ${3:handle};"
+    ],
+    "description": "Instantiate a thread template and bind the handle"
+  },
+  "handler": {
+    "prefix": "handler",
+    "body": [
+      "async handler ${1:name}(${2:params}): ${3:ReturnType} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "async handler declaration"
+  },
+  "fn": {
+    "prefix": "fn",
+    "body": [
+      "function ${1:name}(${2:params}): ${3:void} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "function declaration"
+  },
+  "afn": {
+    "prefix": "afn",
+    "body": [
+      "async function ${1:name}(${2:params}): ${3:void} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "async function declaration"
+  },
+  "expose": {
+    "prefix": "expose",
+    "body": [
+      "expose ${1:name}: ${2:Type};"
+    ],
+    "description": "expose field declaration (read-only to outside)"
+  },
+  "expose_mutable": {
+    "prefix": "expose_mutable",
+    "body": [
+      "expose_mutable ${1:name}: locked<${2:Type}>;"
+    ],
+    "description": "expose_mutable field declaration (concurrent-safe mutable)"
+  },
+  "let": {
+    "prefix": "let",
+    "body": [
+      "let ${1:name}: ${2:Type} = ${3:value};"
+    ],
+    "description": "Variable declaration"
+  },
+  "for": {
+    "prefix": "for",
+    "body": [
+      "for (let ${1:i} = ${2:0}; ${1:i} < ${3:n}; ${1:i} = ${1:i} + 1) {",
+      "\t$0",
+      "}"
+    ],
+    "description": "C-style for loop"
+  },
+  "while": {
+    "prefix": "while",
+    "body": [
+      "while (${1:condition}) {",
+      "\t$0",
+      "}"
+    ],
+    "description": "while loop"
+  },
+  "if": {
+    "prefix": "if",
+    "body": [
+      "if (${1:condition}) {",
+      "\t$0",
+      "}"
+    ],
+    "description": "if statement"
+  },
+  "ifelse": {
+    "prefix": "ifelse",
+    "body": [
+      "if (${1:condition}) {",
+      "\t$2",
+      "} else {",
+      "\t$0",
+      "}"
+    ],
+    "description": "if/else statement"
+  },
+  "result-check": {
+    "prefix": "result",
+    "body": [
+      "let ${1:res}: Result<${2:T}, ${3:E}> = ${4:expr};",
+      "if (${1:res}.isOk()) {",
+      "\tlet ${5:val}: ${2:T} = ${1:res}.unwrap();",
+      "\t$0",
+      "}"
+    ],
+    "description": "Result<T, E> bind and isOk() check"
+  },
+  "option-check": {
+    "prefix": "option",
+    "body": [
+      "let ${1:opt}: Option<${2:T}> = ${3:expr};",
+      "if (!${1:opt}.isNone()) {",
+      "\tlet ${4:val}: ${2:T} = ${1:opt}.unwrap();",
+      "\t$0",
+      "}"
+    ],
+    "description": "Option<T> bind and isNone() check"
+  }
+}

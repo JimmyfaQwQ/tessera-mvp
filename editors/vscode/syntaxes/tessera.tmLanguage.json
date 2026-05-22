@@ -1,0 +1,207 @@
+{
+  "name": "Tessera",
+  "scopeName": "source.tessera",
+  "fileTypes": ["tss"],
+  "patterns": [
+    { "include": "#comment-line" },
+    { "include": "#comment-block" },
+    { "include": "#string-double" },
+    { "include": "#string-single" },
+    { "include": "#template-sigil-keywords" },
+    { "include": "#thread-instantiation" },
+    { "include": "#lifecycle-hooks" },
+    { "include": "#declaration-keywords" },
+    { "include": "#control-flow-keywords" },
+    { "include": "#error-keywords" },
+    { "include": "#type-keywords" },
+    { "include": "#builtin-types" },
+    { "include": "#boolean-literals" },
+    { "include": "#numeric-literals" },
+    { "include": "#operators" },
+    { "include": "#punctuation" }
+  ],
+  "repository": {
+    "comment-line": {
+      "name": "comment.line.double-slash.tessera",
+      "match": "//.*$"
+    },
+    "comment-block": {
+      "name": "comment.block.tessera",
+      "begin": "/\\*",
+      "end": "\\*/",
+      "patterns": [
+        { "include": "#comment-block" }
+      ]
+    },
+    "string-double": {
+      "name": "string.quoted.double.tessera",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.tessera",
+          "match": "\\\\[ntr\"'\\\\0]"
+        }
+      ]
+    },
+    "string-single": {
+      "name": "string.quoted.single.tessera",
+      "begin": "'",
+      "end": "'",
+      "patterns": [
+        {
+          "name": "constant.character.escape.tessera",
+          "match": "\\\\[ntr\"'\\\\0]"
+        }
+      ]
+    },
+    "template-sigil-keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.template.tessera",
+          "match": "\\$template|@template"
+        },
+        {
+          "name": "keyword.control.thread.anonymous.tessera",
+          "match": "\\$\\{"
+        },
+        {
+          "name": "keyword.control.exclusive.tessera",
+          "match": "#exclusive"
+        },
+        {
+          "name": "keyword.control.thread.instantiate.tessera",
+          "match": "\\$(?=[A-Za-z_])"
+        },
+        {
+          "name": "keyword.control.scope.tessera",
+          "match": "@(?=[A-Za-z_])"
+        }
+      ]
+    },
+    "thread-instantiation": {
+      "comment": "Highlights the post-bind operator := and the bound handle name",
+      "match": "(\\}\\s*)(\\:=)(\\s*[a-zA-Z_][a-zA-Z0-9_]*)",
+      "captures": {
+        "2": { "name": "keyword.operator.assignment.postbind.tessera" },
+        "3": { "name": "variable.other.handle.tessera" }
+      }
+    },
+    "lifecycle-hooks": {
+      "name": "entity.name.function.special.tessera",
+      "match": "__(on_enter|on_exit|on_terminate|ping)__"
+    },
+    "declaration-keywords": {
+      "patterns": [
+        {
+          "name": "keyword.declaration.function.tessera",
+          "match": "\\b(function|async|handler)\\b"
+        },
+        {
+          "name": "keyword.declaration.expose.tessera",
+          "match": "\\bexpose_mutable\\b"
+        },
+        {
+          "name": "keyword.declaration.expose.tessera",
+          "match": "\\bexpose\\b"
+        },
+        {
+          "name": "keyword.declaration.variable.tessera",
+          "match": "\\blet\\b"
+        }
+      ]
+    },
+    "control-flow-keywords": {
+      "name": "keyword.control.tessera",
+      "match": "\\b(if|else|while|for|break|continue|return|await)\\b"
+    },
+    "error-keywords": {
+      "name": "keyword.other.error.tessera",
+      "match": "\\b(panic|assert)\\b"
+    },
+    "type-keywords": {
+      "name": "support.type.primitive.tessera",
+      "match": "\\b(bool|int|double|char|String|void|never)\\b"
+    },
+    "builtin-types": {
+      "name": "support.class.builtin.tessera",
+      "match": "\\b(Queue|Option|Result|locked|List|Map|HandlerFuture|HandlerDispatchError)\\b"
+    },
+    "boolean-literals": {
+      "name": "constant.language.boolean.tessera",
+      "match": "\\b(true|false)\\b"
+    },
+    "numeric-literals": {
+      "patterns": [
+        {
+          "name": "constant.numeric.float.tessera",
+          "match": "\\b[0-9]+\\.[0-9]+([eE][+-]?[0-9]+)?\\b"
+        },
+        {
+          "name": "constant.numeric.integer.tessera",
+          "match": "\\b[0-9]+\\b"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.assignment.tessera",
+          "match": ":="
+        },
+        {
+          "name": "keyword.operator.comparison.tessera",
+          "match": "==|!=|<=|>="
+        },
+        {
+          "name": "keyword.operator.logical.tessera",
+          "match": "&&|\\|\\|"
+        },
+        {
+          "name": "keyword.operator.assignment.tessera",
+          "match": "(?<![=!<>])=(?!=)"
+        },
+        {
+          "name": "keyword.operator.arithmetic.tessera",
+          "match": "[+\\-*/%]"
+        },
+        {
+          "name": "keyword.operator.logical.not.tessera",
+          "match": "!(?!=)"
+        },
+        {
+          "name": "keyword.operator.comparison.tessera",
+          "match": "<|>"
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.definition.block.tessera",
+          "match": "[{}]"
+        },
+        {
+          "name": "punctuation.definition.parameters.tessera",
+          "match": "[()]"
+        },
+        {
+          "name": "punctuation.definition.brackets.tessera",
+          "match": "[\\[\\]]"
+        },
+        {
+          "name": "punctuation.separator.tessera",
+          "match": "[;,]"
+        },
+        {
+          "name": "punctuation.separator.colon.tessera",
+          "match": ":"
+        },
+        {
+          "name": "punctuation.accessor.tessera",
+          "match": "\\."
+        }
+      ]
+    }
+  }
+}
