@@ -528,6 +528,13 @@ impl Interpreter {
                     }
                     return Ok(Value::Void);
                 }
+                "keepalive" => {
+                    // Suspend the body future forever so the thread stays alive
+                    // responding to handlers without consuming scheduler time.
+                    // Silently dropped when terminate() fires; no cleanup needed.
+                    std::future::pending::<()>().await;
+                    return Ok(Value::Void); // unreachable
+                }
                 "getchar" => {
                     let mut rx = stdin_receiver().lock().await;
                     let ch = rx.recv().await.flatten();

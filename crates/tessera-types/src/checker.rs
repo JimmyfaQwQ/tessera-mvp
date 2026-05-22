@@ -259,7 +259,16 @@ impl<'e> TypeChecker<'e> {
             Expr::UnaryOp(u) => self.check_unary(u),
             Expr::Call(c) => {
                 for arg in &c.args { self.check_expr(arg); }
-                Type::Error // Function calls resolved by name; basic placeholder
+                // Recognize well-known builtins with meaningful return types.
+                if let Expr::Ident(i) = &c.callee {
+                    match i.name.as_str() {
+                        "keepalive" => return Type::Never,
+                        "getchar"   => return Type::Option(Box::new(Type::Char)),
+                        "print" | "println" | "asleep" => return Type::Void,
+                        _ => {}
+                    }
+                }
+                Type::Error
             }
             Expr::MethodCall(m) => self.check_method_call(m),
             Expr::FieldAccess(f) => self.check_field_access(f),
