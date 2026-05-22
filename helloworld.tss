@@ -18,12 +18,15 @@
 }
 
 $template reader() {
-    define line_available: bool;
+    define line_available: contract;
     define line: Queue<String>;
 
     function __on_enter__(): void {
-        line_available = false;
+        line_available = contract();
         line = Queue<String>();
+    }
+
+    function __on_exit__(): void {
     }
 
     async function run(): void {
@@ -34,7 +37,7 @@ $template reader() {
                 if (buf != "") {
                     #exclusive {
                         line.enqueue(buf);
-                        line_available = true;
+                        line_available.fulfill();
                     }
                 }
                 break;
@@ -43,7 +46,7 @@ $template reader() {
             if (c == '\n') {
                 #exclusive {
                     line.enqueue(buf);
-                    line_available = true;
+                    line_available.fulfill();
                 }
                 buf = "";
             } else if (c == '\r') {
@@ -54,17 +57,11 @@ $template reader() {
         }
     }
 
-    async function __on_terminate__(): void {
-        line_available = false;
-    }
-
-    async handler readLine(): Option<String> {
-        while (!line_available) {
-            asleep(10);
-        }
-        let result: Option<String> = None;
+    async handler readLine(): String {
+        await line_available;
+        let result: String = "";
         #exclusive {
-            result = line.dequeue();
+            result = line.dequeue().unwrap();
             if (line.isEmpty()) {
                 line_available = false;
             }
@@ -76,29 +73,26 @@ $template reader() {
 $template dispatcher(reader_handle: thread<reader>, threads: List<thread<worker>>) {
     async handler run(): void {
         while (true) {
-            let res: Result<Option<String>, HandlerDispatchError> = reader_handle.readLine().waitHandler();
+            let res: Result<String, HandlerDispatchError> = reader_handle.readLine().waitHandler();
             if (res.isErr()) {
                 break;
             }
-            let opt: Option<String> = res.unwrap();
-            if (opt.isSome()) {
-                let text: String = opt.unwrap();
-                if (text == "quit") {
+            let text: String = res.unwrap();
+            if (text == "quit") {
+                break;
+            }
+            let assigned: bool = false;
+            for (let i = 0; i < threads.length(); i = i + 1) {
+                let worker_thread: thread<worker> = threads[i];
+                if (worker_thread.available.isRaised()) {
+                    worker_thread.available.reset();
+                    worker_thread.echo(text);
+                    assigned = true;
                     break;
                 }
-                let assigned: bool = false;
-                for (let i = 0; i < threads.length(); i = i + 1) {
-                    let worker_thread: thread<worker> = threads[i];
-                    if (worker_thread.available.isRaised()) {
-                        worker_thread.available.reset();
-                        worker_thread.echo(text);
-                        assigned = true;
-                        break;
-                    }
-                }
-                if (!assigned) {
-                    println("[Dispatcher] No available worker for: " + text);
-                }
+            }
+            if (!assigned) {
+                println("[Dispatcher] No available worker for: " + text);
             }
         }
     }
@@ -135,6 +129,4 @@ $template worker(name: String) {
     } := d;
 
     d.run().waitHandler();
-
-    r.terminate().wait();
 }

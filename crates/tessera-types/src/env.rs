@@ -78,6 +78,13 @@ impl TypeEnv {
         id
     }
 
+    /// Update an already-registered template's info in place, preserving its id.
+    pub fn update_template(&mut self, name: &str, info: TemplateInfo) {
+        if let Some((_, existing)) = self.templates.get_mut(name) {
+            *existing = info;
+        }
+    }
+
     pub fn lookup_template(&self, name: &str) -> Option<(crate::TemplateId, &TemplateInfo)> {
         self.templates.get(name).map(|(id, info)| (*id, info))
     }

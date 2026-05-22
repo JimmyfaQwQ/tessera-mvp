@@ -28,6 +28,8 @@ pub enum Type {
 
     ThreadHandle(TemplateId),
 
+    HandlerDispatchError,
+
     /// Placeholder for recovery.
     Error,
 }
@@ -63,6 +65,7 @@ impl std::fmt::Display for Type {
             Type::Signal => write!(f, "signal"),
             Type::Contract => write!(f, "contract"),
             Type::ThreadHandle(id) => write!(f, "ThreadHandle({id})"),
+            Type::HandlerDispatchError => write!(f, "HandlerDispatchError"),
             Type::Error => write!(f, "<error>"),
         }
     }
