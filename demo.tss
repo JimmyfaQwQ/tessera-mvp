@@ -160,14 +160,14 @@ asleep(400);
 
 
 // ── Handler 查询：跨线程调用，代码在目标 Worker 的事件循环内执行 ─────────────
-// 返回 Result<String, HandlerDispatchError>，明确处理"线程已终止/崩溃"的情况
-let s1: Result<String, HandlerDispatchError> = w1.status().waitHandler();
-let s2: Result<String, HandlerDispatchError> = w2.status().waitHandler();
-let s3: Result<String, HandlerDispatchError> = w3.status().waitHandler();
+// await HandlerFuture<T> 直接得到 T；dispatch 失败或执行崩溃均 panic
+let s1 = w1.status().wait();
+let s2 = w2.status().wait();
+let s3 = w3.status().wait();
 
-if (s1.isOk()) { println("[Main] " + s1.unwrap()); }
-if (s2.isOk()) { println("[Main] " + s2.unwrap()); }
-if (s3.isOk()) { println("[Main] " + s3.unwrap()); }
+println("[Main] " + s1);
+println("[Main] " + s2);
+println("[Main] " + s3);
 
 // ── expose 直读：不需要任何 handler，直接拿到线程暴露的只读快照 ────────────────
 println("[Main] expose 直读 → w1.tasksCompleted = " + w1.tasksCompleted);

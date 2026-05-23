@@ -14,9 +14,9 @@ let hf1: HandlerFuture<void> = ctr.increment();
 let hf2: HandlerFuture<void> = ctr.increment();
 let hf3: HandlerFuture<void> = ctr.increment();
 
-hf1.waitHandler();
-hf2.waitHandler();
-hf3.waitHandler();
+hf1.wait();
+hf2.wait();
+hf3.wait();
 
 ctr.terminate().wait();
 

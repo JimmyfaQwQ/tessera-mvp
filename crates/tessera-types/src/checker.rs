@@ -477,7 +477,11 @@ impl<'e> TypeChecker<'e> {
                                         }
                                     }
                                 }
-                                return sig.return_type.clone();
+                                return if sig.is_async {
+                                    Type::Future(Box::new(sig.return_type.clone()))
+                                } else {
+                                    sig.return_type.clone()
+                                };
                             }
                         }
                     }
@@ -495,17 +499,20 @@ impl<'e> TypeChecker<'e> {
                 }
             }
             Expr::Await(a) => {
+                let is_async_ctx = matches!(
+                    self.env.current_func,
+                    FuncContext::AsyncFunction { .. } | FuncContext::Handler { .. }
+                );
+                if !is_async_ctx {
+                    self.env.error("await can only be used in async functions or handlers", a.span);
+                }
                 let inner = self.check_expr(&a.expr);
                 match inner {
                     Type::Future(t) => *t,
+                    Type::HandlerFuture(t) => *t,
                     // `await s` on a signal/contract/permit resolves to void (spec §11.3.5 / §12.4.4 / §13.4.5)
                     Type::Signal | Type::Contract | Type::Permit => Type::Void,
-                    _ => {
-                        if !matches!(self.env.current_func, FuncContext::AsyncFunction { .. } | FuncContext::Handler { .. }) {
-                            self.env.error("await can only be used in async functions or handlers", a.span);
-                        }
-                        Type::Error
-                    }
+                    _ => Type::Error,
                 }
             }
             Expr::Panic(_) => Type::Never,
@@ -595,10 +602,22 @@ impl<'e> TypeChecker<'e> {
             "wait" => {
                 match recv_ty {
                     Type::Future(inner) => *inner,
+                    Type::HandlerFuture(inner) => *inner,
                     Type::Signal | Type::Contract | Type::Permit => Type::Void,
                     _ => Type::Error,
                 }
             }
+            "isDone" => {
+                match recv_ty {
+                    Type::Future(_) | Type::HandlerFuture(_) => Type::Bool,
+                    _ => {
+                        self.env.error(format!("isDone() is not defined on type {recv_ty}"), m.method.span);
+                        Type::Error
+                    }
+                }
+            }
+            "isOk" if matches!(recv_ty, Type::HandlerFuture(_)) => Type::Bool,
+            "isErr" if matches!(recv_ty, Type::HandlerFuture(_)) => Type::Bool,
             // signal methods
             "raise" | "reset" => Type::Void,
             "isRaised" => Type::Bool,
@@ -616,14 +635,6 @@ impl<'e> TypeChecker<'e> {
                 }
             }
             "awaitPermit" => Type::Void,
-            "waitHandler" | "awaitHandler" => {
-                match recv_ty {
-                    Type::HandlerFuture(inner) => {
-                        Type::Result(inner, Box::new(Type::HandlerDispatchError))
-                    }
-                    _ => Type::Error,
-                }
-            }
             "terminate" => Type::Future(Box::new(Type::Void)),
             "length" => {
                 match recv_ty {

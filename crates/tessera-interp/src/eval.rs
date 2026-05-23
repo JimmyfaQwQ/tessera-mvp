@@ -48,7 +48,8 @@ use async_recursion::async_recursion;
 use tessera_ast::*;
 use tessera_runtime::{
     Value, RuntimeError, QueuePushError,
-    TesseraLocked, TesseraQueue, TesseraSignal, TesseraContract, TesseraPermit, FutureOutcome, ThreadState,
+    TesseraLocked, TesseraQueue, TesseraSignal, TesseraContract, TesseraPermit,
+    FutureOutcome, TesseraFuture, HandlerResolveResult, ThreadState,
     HandlerRequest,
 };
 use tessera_runtime::value::ValueKey;
@@ -611,7 +612,16 @@ impl Interpreter {
                     if let Some(func) = func {
                         let mut args = Vec::new();
                         for a in &c.args { args.push(self.eval_expr(a).await?); }
-                        return self.call_func(&func, args).await;
+                        let result = self.call_func(&func, args).await;
+                        // Async functions return Future<T>; wrap eagerly-executed result.
+                        if func.kind == FuncKind::Async {
+                            let outcome = match result {
+                                Ok(v)  => FutureOutcome::Ok(v),
+                                Err(e) => FutureOutcome::Failed(e.to_string()),
+                            };
+                            return Ok(Value::Future(TesseraFuture::immediate(outcome)));
+                        }
+                        return result;
                     }
                     return Err(RuntimeError::Panic {
                         message: format!("unknown function '{name}'"),
@@ -795,21 +805,30 @@ impl Interpreter {
                 Ok(Value::Option(removed.map(Box::new)))
             }
 
-            // ── Future .wait() ────────────────────────────────────────────────
+            // ── Future .wait() / .isDone() ───────────────────────────────────
             ("wait", Value::Future(fut)) => {
                 match fut.resolve().await {
                     FutureOutcome::Ok(v) => Ok(v),
                     FutureOutcome::Failed(msg) => Err(RuntimeError::Panic { message: msg, location: m.span }),
                 }
             }
+            ("isDone", Value::Future(fut)) => {
+                Ok(Value::Bool(fut.is_done()))
+            }
 
-            // ── HandlerFuture .waitHandler() / .awaitHandler() ────────────────
-            ("waitHandler" | "awaitHandler", Value::HandlerFuture(hf)) => {
+            // ── HandlerFuture .wait() (sync) / state checks ───────────────────
+            ("wait", Value::HandlerFuture(hf)) => {
                 match hf.resolve().await {
-                    Ok(v)  => Ok(Value::Result(Ok(Box::new(v)))),
-                    Err(e) => Ok(Value::Result(Err(Box::new(Value::Str(e.to_string()))))),
+                    HandlerResolveResult::Ok(v) => Ok(v),
+                    HandlerResolveResult::DispatchFailed(e) =>
+                        Err(RuntimeError::Panic { message: e.to_string(), location: m.span }),
+                    HandlerResolveResult::ExecutionFailed(msg) =>
+                        Err(RuntimeError::Panic { message: msg, location: m.span }),
                 }
             }
+            ("isDone", Value::HandlerFuture(hf)) => Ok(Value::Bool(hf.is_done())),
+            ("isOk",   Value::HandlerFuture(hf)) => Ok(Value::Bool(hf.is_ok())),
+            ("isErr",  Value::HandlerFuture(hf)) => Ok(Value::Bool(hf.is_err())),
 
             // ── ThreadHandle .terminate() ─────────────────────────────────────
             ("terminate", Value::ThreadHandle(state)) => {
@@ -1004,8 +1023,11 @@ impl Interpreter {
                 FutureOutcome::Failed(msg) => Err(RuntimeError::Panic { message: msg, location: a.span }),
             },
             Value::HandlerFuture(hf) => match hf.resolve().await {
-                Ok(v)  => Ok(v),
-                Err(e) => Err(RuntimeError::Panic { message: e.to_string(), location: a.span }),
+                HandlerResolveResult::Ok(v) => Ok(v),
+                HandlerResolveResult::DispatchFailed(e) =>
+                    Err(RuntimeError::Panic { message: e.to_string(), location: a.span }),
+                HandlerResolveResult::ExecutionFailed(msg) =>
+                    Err(RuntimeError::Panic { message: msg, location: a.span }),
             },
             // `await s` is equivalent to s.awaitSignal() — spec §11.3.5
             Value::Signal(s) => { s.wait().await; Ok(Value::Void) }
@@ -1199,6 +1221,14 @@ fn values_equal(a: &Value, b: &Value) -> bool {
         (Value::Str(a),  Value::Str(b))   => a == b,
         (Value::Void,    Value::Void)     => true,
         (Value::Option(None), Value::Option(None)) => true,
+        // HandlerFuture == Err(v): check if hf is in error state and error message matches
+        (Value::HandlerFuture(hf), Value::Result(Err(e))) |
+        (Value::Result(Err(e)), Value::HandlerFuture(hf)) => {
+            match hf.get_err() {
+                Some(msg) => values_equal(&Value::Str(msg), e),
+                None => false,
+            }
+        }
         _ => false,
     }
 }

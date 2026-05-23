@@ -18,8 +18,10 @@
 
     function __on_exit__(): void {
         for (let i: int = 0; i < worker_count; i = i + 1) {
-            let w: thread<worker> = workers.dequeue().unwrap();
-            w.terminate();
+            let holder: thread<worker_holder> = holders.get(i);
+            holder.try_terminate();
+            holder.can_terminate;
+            holder.terminate();
         }
     }
 }
@@ -78,11 +80,11 @@ $template reader() {
 $template dispatcher(reader_handle: thread<reader>, threads: Queue<thread<worker>>) {
     async handler run(): void {
         while (true) {
-            let res: Result<String, HandlerDispatchError> = reader_handle.readLine().waitHandler();
-            if (res.isErr()) {
+            let hf: HandlerFuture<String> = reader_handle.readLine();
+            if (hf.isErr()) {
                 break;
             }
-            let text: String = res.unwrap();
+            let text: String = hf.wait();
             if (text == "quit") {
                 break;
             }
@@ -98,12 +100,23 @@ $template dispatcher(reader_handle: thread<reader>, threads: Queue<thread<worker
 }
 
 $template worker_holder(pool: Queue<thread<worker>>, worker: thread<worker>) {
+    expose can_terminate: contract;
+
+    function __on_enter__(): void {
+        can_terminate = contract();
+    }
+
     async function run(): void {
         while (true) {
             await worker.available;
             worker.available.reset();
             pool.push(worker);
         }
+    }
+
+    async handler try_terminate(): void {
+        await worker.terminate();
+        can_terminate.fulfill();
     }
 }
 
@@ -135,8 +148,8 @@ $reader() {
 println("请输入worker数量：");
 let worker_count: int = 0;
 while (true) {
-    let line: Result<String, HandlerDispatchError> = r.readLine().waitHandler();
-    let parsed: Result<int, ParseError> = line.unwrap().toInt();
+    let line: String = r.readLine().wait();
+    let parsed: Result<int, ParseError> = line.toInt();
     if (parsed.isOk()) {
         worker_count = parsed.unwrap();
         break;
@@ -152,5 +165,5 @@ println("启动了 " + worker_count + " 个worker... 输入并回车以分发任
         await keepalive();
     } := d;
 
-    d.run().waitHandler();
+    d.run().wait();
 }

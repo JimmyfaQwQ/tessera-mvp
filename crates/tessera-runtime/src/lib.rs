@@ -11,5 +11,5 @@ pub use value::Value;
 pub use thread_state::{ThreadState, ThreadStatus, HandlerRequest, HandlerOutcome, TerminateBundle};
 pub use locked::TesseraLocked;
 pub use queue::{TesseraQueue, QueuePushError};
-pub use future::{TesseraFuture, TesseraHandlerFuture, FutureOutcome};
+pub use future::{TesseraFuture, TesseraHandlerFuture, FutureOutcome, HandlerResolveResult};
 pub use signal::{TesseraSignal, TesseraContract, TesseraPermit};
