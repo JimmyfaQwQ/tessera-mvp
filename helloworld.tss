@@ -45,7 +45,7 @@ $template reader() {
             if (ch.isNone()) {
                 if (buf != "") {
                     #exclusive {
-                        self.line.enqueue(buf);
+                        self.line.push(buf);
                         self.line_available.release();
                     }
                 }
@@ -54,7 +54,7 @@ $template reader() {
             let c: char = ch.unwrap();
             if (c == '\n') {
                 #exclusive {
-                    self.line.enqueue(buf);
+                    self.line.push(buf);
                     self.line_available.release();
                 }
                 buf = "";
@@ -71,7 +71,7 @@ $template reader() {
         await self.line_available;
         let result: String = "";
         #exclusive {
-            result = self.line.dequeue().unwrap();
+        result = self.line.tryPop().unwrap();
         }
         return result;
     }
@@ -84,7 +84,7 @@ $template dispatcher(reader_handle: thread<reader>, threads: Queue<thread<worker
             if (hf.isErr()) {
                 break;
             }
-            let text: String = hf.wait();
+            let text: String = await hf;
             if (text == "quit") {
                 break;
             }
@@ -117,6 +117,9 @@ $template worker_holder(pool: Queue<thread<worker>>, worker: thread<worker>) {
     async handler try_terminate(): void {
         await self.worker.terminate();
         self.can_terminate.fulfill();
+    }
+
+    async function __on_terminate__(): void {
     }
 }
 
@@ -161,7 +164,7 @@ while (true) {
 println("启动了 " + worker_count + " 个worker... 输入并回车以分发任务。");
 
 @with_workers(worker_count) {
-    $dispatcher(r, workers) {
+    $dispatcher(r, self.workers) {
         await keepalive();
     } := d;
 

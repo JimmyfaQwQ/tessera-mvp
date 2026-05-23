@@ -1,5 +1,7 @@
 $template Worker() {
     expose result: int;
+
+    async function __on_terminate__(): void {}
 }
 
 $Worker() {

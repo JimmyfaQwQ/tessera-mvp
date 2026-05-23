@@ -23,6 +23,7 @@ pub async fn run_thread_task(
     body: Arc<Block>,
     state: Arc<ThreadState>,
     mut handler_rx: mpsc::Receiver<HandlerRequest>,
+    ready_tx: tokio::sync::oneshot::Sender<()>,
 ) {
     // ── Setup ────────────────────────────────────────────────────────────────
 
@@ -85,6 +86,8 @@ pub async fn run_thread_task(
         if let Some(hook) = find_thread_hook(d, "__on_enter__") {
             let hook = hook.clone();
             if let Err(e) = interp.exec_func_def_body(&hook, vec![]).await {
+                // Notify parent that __on_enter__ is done (failed), then crash.
+                let _ = ready_tx.send(());
                 state.set_status(ThreadStatus::Crashed(e.to_string())).await;
                 drain_handlers(&mut handler_rx, HandlerDispatchError::TargetCrashed);
                 if let Some(b) = state.take_terminate_bundle().await {
@@ -94,6 +97,9 @@ pub async fn run_thread_task(
             }
         }
     }
+
+    // Notify parent that __on_enter__ has finished; parent can now proceed.
+    let _ = ready_tx.send(());
 
     // ── Claim terminate channels (always present from ThreadState::new) ──────
 

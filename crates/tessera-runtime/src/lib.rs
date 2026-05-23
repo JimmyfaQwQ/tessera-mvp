@@ -12,4 +12,4 @@ pub use thread_state::{ThreadState, ThreadStatus, HandlerRequest, HandlerOutcome
 pub use locked::TesseraLocked;
 pub use queue::{TesseraQueue, QueuePushError};
 pub use future::{TesseraFuture, TesseraHandlerFuture, FutureOutcome, HandlerResolveResult};
-pub use signal::{TesseraSignal, TesseraContract, TesseraPermit};
+pub use signal::{TesseraSignal, TesseraContract, TesseraPermit, BrokenReason, BreakablePrimitive};

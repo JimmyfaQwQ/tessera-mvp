@@ -1,165 +1,311 @@
 use std::sync::Mutex;
-use tokio::sync::watch;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+// ── Broken state ─────────────────────────────────────────────────────────────
+
+/// Why a synchronization primitive entered Broken state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BrokenReason {
+    /// Binding owner completed normal termination (Terminated).
+    OwnerGone,
+    /// Binding owner crashed (Crashed).
+    OwnerCrashed,
+}
+
+impl BrokenReason {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            BrokenReason::OwnerGone    => "OwnerGone",
+            BrokenReason::OwnerCrashed => "OwnerCrashed",
+        }
+    }
+}
+
+/// Trait implemented by all three sync primitives so `ThreadState` can break
+/// them without knowing their concrete types.
+pub trait BreakablePrimitive: Send + Sync {
+    fn break_with(&self, reason: BrokenReason);
+}
+
+// ── signal ────────────────────────────────────────────────────────────────────
+
+struct SignalState {
+    raised: bool,
+    broken: Option<BrokenReason>,
+}
 
 /// Broadcast signal — manual-reset event.
 ///
-/// - `raise()` sets the signal; all current and future waiters are unblocked.
+/// - `raise()` sets the signal; wakes ALL current and future waiters.
 /// - `reset()` clears the signal; subsequent waiters will block again.
-/// - Concurrent-safe: can be shared across Tessera threads via `expose_mutable`.
+/// - When the binding owner terminates/crashes, the signal enters `Broken` state:
+///   all current waiters are woken with failure; future waits fail immediately.
 pub struct TesseraSignal {
-    tx: watch::Sender<bool>,
-    // Keep one receiver alive so that send() always has a subscriber and
-    // actually stores the new value.  Without this, send() returns Err when
-    // there are no external waiters and the stored value is never updated.
-    _keep: watch::Receiver<bool>,
+    state: Mutex<SignalState>,
+    /// Notified on every state change (raise, reset, broken).
+    changed: tokio::sync::Notify,
+    /// True once ownership has been claimed (first expose wins).
+    claimed: AtomicBool,
 }
 
-// watch::Sender is Send + Sync, so TesseraSignal is too.
 impl std::fmt::Debug for TesseraSignal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "signal({})", if *self.tx.borrow() { "raised" } else { "not raised" })
+        let s = self.state.lock().unwrap();
+        if s.broken.is_some() {
+            write!(f, "signal(broken)")
+        } else {
+            write!(f, "signal({})", if s.raised { "raised" } else { "not raised" })
+        }
     }
 }
 
 impl TesseraSignal {
     pub fn new() -> Self {
-        let (tx, _keep) = watch::channel(false);
-        Self { tx, _keep }
+        Self {
+            state: Mutex::new(SignalState { raised: false, broken: None }),
+            changed: tokio::sync::Notify::new(),
+            claimed: AtomicBool::new(false),
+        }
     }
 
-    /// Atomically set signal to raised; wakes all waiters.
+    /// Atomically set to raised; wakes all waiters. No-op if broken.
     pub fn raise(&self) {
-        let _ = self.tx.send(true);
+        let mut s = self.state.lock().unwrap();
+        if s.broken.is_some() { return; }
+        s.raised = true;
+        drop(s);
+        self.changed.notify_waiters();
     }
 
-    /// Atomically reset signal to not-raised.
+    /// Atomically set to not-raised. No-op if broken.
     pub fn reset(&self) {
-        let _ = self.tx.send(false);
+        let mut s = self.state.lock().unwrap();
+        if s.broken.is_some() { return; }
+        s.raised = false;
+        // No wakeup needed — waiters re-check on the next raise.
     }
 
-    /// Snapshot of current state.
+    /// Snapshot: true only if raised AND not broken.
     pub fn is_raised(&self) -> bool {
-        *self.tx.borrow()
+        let s = self.state.lock().unwrap();
+        s.raised && s.broken.is_none()
     }
 
-    /// Suspend until the signal is raised. Returns immediately if already raised.
-    pub async fn wait(&self) {
-        let mut rx = self.tx.subscribe();
-        // borrow_and_update marks the current value as "seen", so changed() will
-        // only fire on the *next* send — we explicitly check the current value first.
-        if *rx.borrow_and_update() {
-            return;
-        }
+    pub fn is_ok(&self)  -> bool { self.state.lock().unwrap().broken.is_none() }
+    pub fn is_err(&self) -> bool { self.state.lock().unwrap().broken.is_some() }
+
+    pub fn broken_reason(&self) -> Option<BrokenReason> {
+        self.state.lock().unwrap().broken.clone()
+    }
+
+    /// First expose wins ownership. Returns true if this call claimed it.
+    pub fn try_claim_ownership(&self) -> bool {
+        self.claimed.compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed).is_ok()
+    }
+
+    /// Suspend until raised. Returns `Err` if the signal is (or becomes) broken.
+    /// The caller is responsible for converting `Err` into a thread panic.
+    pub async fn wait(&self) -> Result<(), BrokenReason> {
         loop {
-            if rx.changed().await.is_err() {
-                return; // sender dropped
+            // Pin a waiter entry BEFORE checking state (race-free).
+            let fut = self.changed.notified();
+            {
+                let s = self.state.lock().unwrap();
+                if s.raised { return Ok(()); }
+                if let Some(r) = &s.broken { return Err(r.clone()); }
             }
-            if *rx.borrow_and_update() {
-                return;
-            }
+            fut.await;
         }
     }
 }
 
-/// `permit` — counting semaphore (FIFO).
+impl BreakablePrimitive for TesseraSignal {
+    fn break_with(&self, reason: BrokenReason) {
+        let mut s = self.state.lock().unwrap();
+        if s.broken.is_some() { return; }
+        s.broken = Some(reason);
+        drop(s);
+        self.changed.notify_waiters(); // wake ALL current waiters
+    }
+}
+
+// ── contract ──────────────────────────────────────────────────────────────────
+
+struct ContractState {
+    pending: bool,
+    broken: Option<BrokenReason>,
+}
+
+/// Auto-reset single-cast event with FIFO wait queue.
 ///
-/// - `release()` / `release_n(n)` adds permits; wakes queued waiters FIFO.
-/// - `acquire()` consumes one permit; suspends until one is available.
-/// - Concurrent-safe.
-pub struct TesseraPermit {
-    sem: tokio::sync::Semaphore,
-}
-
-impl std::fmt::Debug for TesseraPermit {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "permit({})", self.sem.available_permits())
-    }
-}
-
-impl TesseraPermit {
-    pub fn new(initial: i32) -> Self {
-        assert!(initial >= 0, "permit: initial must be non-negative");
-        Self { sem: tokio::sync::Semaphore::new(initial as usize) }
-    }
-
-    /// Return one permit; wake the oldest waiter if any.
-    pub fn release(&self) {
-        self.sem.add_permits(1);
-    }
-
-    /// Return `n` permits. Panics if `n <= 0`.
-    pub fn release_n(&self, n: i32) {
-        assert!(n > 0, "permit: release(n) requires n > 0");
-        self.sem.add_permits(n as usize);
-    }
-
-    /// Snapshot of current available permits.
-    pub fn count(&self) -> i32 {
-        self.sem.available_permits() as i32
-    }
-
-    /// Acquire one permit; suspends (FIFO) until one is available.
-    pub async fn acquire(&self) {
-        // forget() so the permit is not auto-released on drop;
-        // the Tessera program calls release() explicitly.
-        let p = self.sem.acquire().await.unwrap();
-        p.forget();
-    }
-}
-
-/// `contract` — auto-reset single-waiter (FIFO) event.
-///
-/// - `fulfill()` stores one notification; the next waiter consumes it.
-/// - Each notification is consumed by exactly one waiter (FIFO).
-/// - If called when a notification is already pending, it is a no-op.
-/// - Concurrent-safe.
+/// - `fulfill()` delivers one notification; consumed by exactly one waiter.
+/// - If no waiter is parked, stores the notification for the next `wait()`.
+/// - Idempotent: calling `fulfill()` when already pending is a no-op.
 pub struct TesseraContract {
-    pending: Mutex<bool>,
-    notify: tokio::sync::Notify,
+    state: Mutex<ContractState>,
+    changed: tokio::sync::Notify,
+    claimed: AtomicBool,
 }
 
 impl std::fmt::Debug for TesseraContract {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let p = self.pending.lock().map(|g| *g).unwrap_or(false);
-        write!(f, "contract({})", if p { "pending" } else { "idle" })
+        let s = self.state.lock().unwrap();
+        if s.broken.is_some() {
+            write!(f, "contract(broken)")
+        } else {
+            write!(f, "contract({})", if s.pending { "pending" } else { "idle" })
+        }
     }
 }
 
 impl TesseraContract {
     pub fn new() -> Self {
         Self {
-            pending: Mutex::new(false),
-            notify: tokio::sync::Notify::new(),
+            state: Mutex::new(ContractState { pending: false, broken: None }),
+            changed: tokio::sync::Notify::new(),
+            claimed: AtomicBool::new(false),
         }
     }
 
-    /// Store one notification. Idempotent if a notification is already pending.
+    /// Deliver one notification. No-op if broken or already pending.
     pub fn fulfill(&self) {
-        let mut p = self.pending.lock().unwrap();
-        if !*p {
-            *p = true;
-            self.notify.notify_one();
+        let mut s = self.state.lock().unwrap();
+        if s.broken.is_some() || s.pending { return; }
+        s.pending = true;
+        drop(s);
+        self.changed.notify_one(); // wake exactly one waiter (FIFO)
+    }
+
+    /// Snapshot: true only if pending AND not broken.
+    pub fn is_pending(&self) -> bool {
+        let s = self.state.lock().unwrap();
+        s.pending && s.broken.is_none()
+    }
+
+    pub fn is_ok(&self)  -> bool { self.state.lock().unwrap().broken.is_none() }
+    pub fn is_err(&self) -> bool { self.state.lock().unwrap().broken.is_some() }
+
+    pub fn broken_reason(&self) -> Option<BrokenReason> {
+        self.state.lock().unwrap().broken.clone()
+    }
+
+    pub fn try_claim_ownership(&self) -> bool {
+        self.claimed.compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed).is_ok()
+    }
+
+    /// Consume one notification; suspends if none is available.
+    /// Returns `Err` if broken.
+    pub async fn wait(&self) -> Result<(), BrokenReason> {
+        loop {
+            // Pin waiter entry BEFORE checking state (race-free).
+            let fut = self.changed.notified();
+            {
+                let mut s = self.state.lock().unwrap();
+                if let Some(r) = &s.broken { return Err(r.clone()); }
+                if s.pending {
+                    s.pending = false;
+                    return Ok(());
+                }
+            }
+            fut.await;
+        }
+    }
+}
+
+impl BreakablePrimitive for TesseraContract {
+    fn break_with(&self, reason: BrokenReason) {
+        let mut s = self.state.lock().unwrap();
+        if s.broken.is_some() { return; }
+        s.broken = Some(reason);
+        drop(s);
+        self.changed.notify_waiters(); // wake ALL (unlike fulfill which wakes one)
+    }
+}
+
+// ── permit ────────────────────────────────────────────────────────────────────
+
+/// Counting semaphore with FIFO wait queue.
+///
+/// - `release()` / `release_n(n)` adds permits; wakes FIFO waiters.
+/// - `wait()` / `await p` consumes one permit; suspends if count is zero.
+/// - `Semaphore::close()` is used to implement Broken: wakes all waiters.
+pub struct TesseraPermit {
+    sem: tokio::sync::Semaphore,
+    broken: Mutex<Option<BrokenReason>>,
+    claimed: AtomicBool,
+}
+
+impl std::fmt::Debug for TesseraPermit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.sem.is_closed() {
+            write!(f, "permit(broken)")
+        } else {
+            write!(f, "permit({})", self.sem.available_permits())
+        }
+    }
+}
+
+impl TesseraPermit {
+    pub fn new(initial: i32) -> Self {
+        assert!(initial >= 0, "permit: initial must be non-negative");
+        Self {
+            sem: tokio::sync::Semaphore::new(initial as usize),
+            broken: Mutex::new(None),
+            claimed: AtomicBool::new(false),
         }
     }
 
-    /// Snapshot: true if a notification is waiting to be consumed.
-    pub fn is_pending(&self) -> bool {
-        *self.pending.lock().unwrap()
+    /// Return one permit; wake the oldest waiter if any. No-op if broken.
+    pub fn release(&self) {
+        if self.sem.is_closed() { return; }
+        self.sem.add_permits(1);
     }
 
-    /// Consume one notification; blocks/suspends if none is available.
-    pub async fn wait(&self) {
-        // Check for a stored notification before parking.
-        {
-            let mut p = self.pending.lock().unwrap();
-            if *p {
-                *p = false;
-                return;
+    /// Return `n` permits. `n` must be > 0. No-op if broken.
+    pub fn release_n(&self, n: i32) {
+        assert!(n > 0, "permit: release(n) requires n > 0");
+        if self.sem.is_closed() { return; }
+        self.sem.add_permits(n as usize);
+    }
+
+    /// Snapshot of available permits. Returns 0 if broken.
+    pub fn count(&self) -> i32 {
+        if self.sem.is_closed() { return 0; }
+        self.sem.available_permits() as i32
+    }
+
+    pub fn is_ok(&self)  -> bool { !self.sem.is_closed() }
+    pub fn is_err(&self) -> bool { self.sem.is_closed() }
+
+    pub fn broken_reason(&self) -> Option<BrokenReason> {
+        self.broken.lock().unwrap().clone()
+    }
+
+    pub fn try_claim_ownership(&self) -> bool {
+        self.claimed.compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed).is_ok()
+    }
+
+    /// Acquire one permit; suspends (FIFO) until one is available.
+    /// Returns `Err` if broken.
+    pub async fn acquire(&self) -> Result<(), BrokenReason> {
+        match self.sem.acquire().await {
+            Ok(p) => { p.forget(); Ok(()) }
+            Err(_) => {
+                // Semaphore was closed (Broken).
+                let reason = self.broken.lock().unwrap().clone()
+                    .unwrap_or(BrokenReason::OwnerGone);
+                Err(reason)
             }
         }
-        self.notify.notified().await;
-        // Consume the stored notification that fulfill() set before notify_one().
-        let mut p = self.pending.lock().unwrap();
-        *p = false;
+    }
+}
+
+impl BreakablePrimitive for TesseraPermit {
+    fn break_with(&self, reason: BrokenReason) {
+        let mut b = self.broken.lock().unwrap();
+        if b.is_some() { return; }
+        *b = Some(reason);
+        drop(b);
+        self.sem.close(); // wakes all waiters with AcquireError
     }
 }

@@ -4,6 +4,7 @@ use tokio::sync::{Mutex, RwLock, mpsc, oneshot, watch};
 use indexmap::IndexMap;
 
 use crate::{Value, HandlerDispatchError, TesseraFuture, FutureOutcome};
+use crate::signal::{BreakablePrimitive, BrokenReason};
 
 pub type ThreadId = u64;
 
@@ -37,6 +38,8 @@ pub struct TerminateBundle {
 pub struct ThreadState {
     pub id: ThreadId,
     pub template_name: Option<String>,
+    /// Whether this thread declared `__on_terminate__` and can be terminated.
+    pub is_terminatable: bool,
 
     status: Mutex<ThreadStatus>,
     status_tx: watch::Sender<ThreadStatus>,
@@ -54,6 +57,10 @@ pub struct ThreadState {
     terminate_future: TesseraFuture,
 
     pub exclusive_mode: AtomicBool,
+
+    /// Primitives bound to this thread via `expose` / `expose_mutable`.
+    /// Broken when this thread reaches Terminated or Crashed.
+    owned_primitives: std::sync::Mutex<Vec<Arc<dyn BreakablePrimitive>>>,
 }
 
 impl std::fmt::Debug for ThreadState {
@@ -72,6 +79,7 @@ impl ThreadState {
     pub fn new(
         template_name: Option<String>,
         handler_tx: mpsc::Sender<HandlerRequest>,
+        is_terminatable: bool,
     ) -> Arc<Self> {
         let id = THREAD_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
         let (status_tx, _status_rx) = watch::channel(ThreadStatus::Running);
@@ -82,6 +90,7 @@ impl ThreadState {
         Arc::new(Self {
             id,
             template_name,
+            is_terminatable,
             status: Mutex::new(ThreadStatus::Running),
             status_tx,
             handler_tx,
@@ -91,6 +100,7 @@ impl ThreadState {
             terminate_signal_tx: Mutex::new(Some(signal_tx)),
             terminate_future,
             exclusive_mode: AtomicBool::new(false),
+            owned_primitives: std::sync::Mutex::new(Vec::new()),
         })
     }
 
@@ -100,7 +110,20 @@ impl ThreadState {
 
     pub async fn set_status(&self, s: ThreadStatus) {
         *self.status.lock().await = s.clone();
-        let _ = self.status_tx.send(s);
+        let _ = self.status_tx.send(s.clone());
+        // When the thread fully stops, break all primitives it owns so that
+        // waiters on those primitives receive a failure notification.
+        let reason = match &s {
+            ThreadStatus::Terminated  => Some(BrokenReason::OwnerGone),
+            ThreadStatus::Crashed(_)  => Some(BrokenReason::OwnerCrashed),
+            _ => None,
+        };
+        if let Some(r) = reason {
+            let prims = self.owned_primitives.lock().unwrap();
+            for p in &*prims {
+                p.break_with(r.clone());
+            }
+        }
     }
 
     /// Request termination. All callers receive the same cached Future<void>.
@@ -142,6 +165,13 @@ impl ThreadState {
             Ok(HandlerOutcome::DispatchFailed(e)) => Err(e),
             Err(_) => Err(HandlerDispatchError::TargetCrashed),
         }
+    }
+
+    /// Register a primitive as owned by this thread. Called by `maybe_sync_expose`
+    /// when a primitive is first exposed by this thread. Breaking primitives happens
+    /// in `set_status(Terminated/Crashed)`.
+    pub fn register_owned(&self, prim: Arc<dyn BreakablePrimitive>) {
+        self.owned_primitives.lock().unwrap().push(prim);
     }
 
     pub fn exclusive_mode(&self) -> bool {

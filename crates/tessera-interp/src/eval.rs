@@ -50,7 +50,7 @@ use tessera_runtime::{
     Value, RuntimeError, QueuePushError,
     TesseraLocked, TesseraQueue, TesseraSignal, TesseraContract, TesseraPermit,
     FutureOutcome, TesseraFuture, HandlerResolveResult, ThreadState,
-    HandlerRequest,
+    HandlerRequest, BreakablePrimitive,
 };
 use tessera_runtime::value::ValueKey;
 use crate::env::Env;
@@ -430,13 +430,20 @@ impl Interpreter {
             ThreadTemplateRef::Shorthand => (None, None),
         };
 
+        let is_terminatable = decl.as_ref().map_or(false, |d| {
+            d.members.iter().any(|m| matches!(m, tessera_ast::ThreadTemplateMember::OnTerminate(_)))
+        });
+
         let (handler_tx, handler_rx) = mpsc::channel::<HandlerRequest>(64);
-        let thread_state = ThreadState::new(template_name, handler_tx);
+        let thread_state = ThreadState::new(template_name, handler_tx, is_terminatable);
 
         let child_state = InterpState::new_for_thread(&self.0);
         let child_interp = Interpreter(child_state);
         let body = Arc::new(ts.body.clone());
         let state_clone = thread_state.clone();
+
+        // Channel that fires once __on_enter__ has finished (successfully or not).
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<()>();
 
         tokio::task::spawn_local(crate::event_loop::run_thread_task(
             child_interp,
@@ -445,10 +452,14 @@ impl Interpreter {
             body,
             state_clone,
             handler_rx,
+            ready_tx,
         ));
 
-        // Yield to let the spawned thread run __on_enter__ before the parent continues.
-        tokio::task::yield_now().await;
+        // Wait for __on_enter__ to complete before binding the handle.
+        // This matches the spec guarantee that __on_enter__ finishes before
+        // the parent thread continues, regardless of how many await points
+        // __on_enter__ contains.
+        let _ = ready_rx.await;
 
         if let HandleBind::Bind(name) = &ts.handle_bind {
             self.0.env.borrow_mut().define(
@@ -901,6 +912,15 @@ impl Interpreter {
 
             // ── ThreadHandle .terminate() ─────────────────────────────────────
             ("terminate", Value::ThreadHandle(state)) => {
+                if !state.is_terminatable {
+                    return Err(RuntimeError::Panic {
+                        message: format!(
+                            "thread '{}' is not terminatable (no __on_terminate__ declared)",
+                            state.template_name.as_deref().unwrap_or("<anonymous>")
+                        ),
+                        location: m.span,
+                    });
+                }
                 let fut = state.terminate().await;
                 Ok(Value::Future(fut))
             }
@@ -977,17 +997,35 @@ impl Interpreter {
             }
 
             // ── signal ────────────────────────────────────────────────────────
-            ("raise",       Value::Signal(s)) => { s.raise();    Ok(Value::Void) }
-            ("reset",       Value::Signal(s)) => { s.reset();    Ok(Value::Void) }
-            ("isRaised",    Value::Signal(s)) => Ok(Value::Bool(s.is_raised())),
-            ("wait",        Value::Signal(s)) => { s.wait().await; Ok(Value::Void) }
-            ("awaitSignal", Value::Signal(s)) => { s.wait().await; Ok(Value::Void) }
+            ("raise",    Value::Signal(s)) => { s.raise();  Ok(Value::Void) }
+            ("reset",    Value::Signal(s)) => { s.reset();  Ok(Value::Void) }
+            ("isRaised", Value::Signal(s)) => Ok(Value::Bool(s.is_raised())),
+            ("isOk",     Value::Signal(s)) => Ok(Value::Bool(s.is_ok())),
+            ("isErr",    Value::Signal(s)) => Ok(Value::Bool(s.is_err())),
+            ("wait",     Value::Signal(s)) => {
+                match s.wait().await {
+                    Ok(()) => Ok(Value::Void),
+                    Err(r) => Err(RuntimeError::Panic {
+                        message: format!("signal broken: {}", r.as_str()),
+                        location: m.span,
+                    }),
+                }
+            }
 
             // ── contract ──────────────────────────────────────────────────────
-            ("fulfill",       Value::Contract(c)) => { c.fulfill(); Ok(Value::Void) }
-            ("isPending",     Value::Contract(c)) => Ok(Value::Bool(c.is_pending())),
-            ("wait",          Value::Contract(c)) => { c.wait().await; Ok(Value::Void) }
-            ("awaitContract", Value::Contract(c)) => { c.wait().await; Ok(Value::Void) }
+            ("fulfill",   Value::Contract(c)) => { c.fulfill(); Ok(Value::Void) }
+            ("isPending", Value::Contract(c)) => Ok(Value::Bool(c.is_pending())),
+            ("isOk",      Value::Contract(c)) => Ok(Value::Bool(c.is_ok())),
+            ("isErr",     Value::Contract(c)) => Ok(Value::Bool(c.is_err())),
+            ("wait",      Value::Contract(c)) => {
+                match c.wait().await {
+                    Ok(()) => Ok(Value::Void),
+                    Err(r) => Err(RuntimeError::Panic {
+                        message: format!("contract broken: {}", r.as_str()),
+                        location: m.span,
+                    }),
+                }
+            }
 
             // ── permit ────────────────────────────────────────────────────────
             ("release", Value::Permit(p)) => {
@@ -1010,9 +1048,18 @@ impl Interpreter {
                 }
                 Ok(Value::Void)
             }
-            ("count",        Value::Permit(p)) => Ok(Value::Int(p.count())),
-            ("wait",         Value::Permit(p)) => { p.acquire().await; Ok(Value::Void) }
-            ("awaitPermit",  Value::Permit(p)) => { p.acquire().await; Ok(Value::Void) }
+            ("count",   Value::Permit(p)) => Ok(Value::Int(p.count())),
+            ("isOk",   Value::Permit(p)) => Ok(Value::Bool(p.is_ok())),
+            ("isErr",  Value::Permit(p)) => Ok(Value::Bool(p.is_err())),
+            ("wait",   Value::Permit(p)) => {
+                match p.acquire().await {
+                    Ok(()) => Ok(Value::Void),
+                    Err(r) => Err(RuntimeError::Panic {
+                        message: format!("permit broken: {}", r.as_str()),
+                        location: m.span,
+                    }),
+                }
+            }
 
             (method, recv) => Err(RuntimeError::Panic {
                 message: format!("no method '{}' on type {}", method, recv.type_name()),
@@ -1107,12 +1154,36 @@ impl Interpreter {
                 HandlerResolveResult::ExecutionFailed(msg) =>
                     Err(RuntimeError::Panic { message: msg, location: a.span }),
             },
-            // `await s` is equivalent to s.awaitSignal() — spec §11.3.5
-            Value::Signal(s) => { s.wait().await; Ok(Value::Void) }
-            // `await c` is equivalent to c.awaitContract() — spec §12.4.4
-            Value::Contract(c) => { c.wait().await; Ok(Value::Void) }
-            // `await p` is equivalent to p.awaitPermit() — spec §13.4.5
-            Value::Permit(p) => { p.acquire().await; Ok(Value::Void) }
+            // `await s` — panics if signal is broken
+            Value::Signal(s) => {
+                match s.wait().await {
+                    Ok(()) => Ok(Value::Void),
+                    Err(r) => Err(RuntimeError::Panic {
+                        message: format!("signal broken: {}", r.as_str()),
+                        location: a.span,
+                    }),
+                }
+            }
+            // `await c` — panics if contract is broken
+            Value::Contract(c) => {
+                match c.wait().await {
+                    Ok(()) => Ok(Value::Void),
+                    Err(r) => Err(RuntimeError::Panic {
+                        message: format!("contract broken: {}", r.as_str()),
+                        location: a.span,
+                    }),
+                }
+            }
+            // `await p` — panics if permit is broken
+            Value::Permit(p) => {
+                match p.acquire().await {
+                    Ok(()) => Ok(Value::Void),
+                    Err(r) => Err(RuntimeError::Panic {
+                        message: format!("permit broken: {}", r.as_str()),
+                        location: a.span,
+                    }),
+                }
+            }
             other => Ok(other),
         }
     }
@@ -1149,17 +1220,27 @@ impl Interpreter {
     // Non-async: uses try_write() so the thread body never yields here.
     // try_write() always succeeds (no contention — only this task writes).
     fn maybe_sync_expose(&self, name: &str, value: &Value) {
-        if self.0.expose_field_names.borrow().contains(name) {
-            if let Some(state) = self.0.current_thread_state.borrow().clone() {
-                if let Ok(mut guard) = state.expose_fields.try_write() {
-                    guard.insert(name.to_string(), value.clone());
-                }
+        let is_expose         = self.0.expose_field_names.borrow().contains(name);
+        let is_expose_mutable = !is_expose && self.0.expose_mutable_field_names.borrow().contains(name);
+
+        if !is_expose && !is_expose_mutable { return; }
+
+        if let Some(state) = self.0.current_thread_state.borrow().clone() {
+            // Sync the field value into the expose map.
+            let fields = if is_expose { &state.expose_fields } else { &state.expose_mutable_fields };
+            if let Ok(mut guard) = fields.try_write() {
+                guard.insert(name.to_string(), value.clone());
             }
-        } else if self.0.expose_mutable_field_names.borrow().contains(name) {
-            if let Some(state) = self.0.current_thread_state.borrow().clone() {
-                if let Ok(mut guard) = state.expose_mutable_fields.try_write() {
-                    guard.insert(name.to_string(), value.clone());
-                }
+
+            // Claim binding ownership for primitive values (first expose wins).
+            let owned: Option<Arc<dyn BreakablePrimitive>> = match value {
+                Value::Signal(s)   if s.try_claim_ownership() => Some(Arc::clone(s) as _),
+                Value::Contract(c) if c.try_claim_ownership() => Some(Arc::clone(c) as _),
+                Value::Permit(p)   if p.try_claim_ownership() => Some(Arc::clone(p) as _),
+                _ => None,
+            };
+            if let Some(prim) = owned {
+                state.register_owned(prim);
             }
         }
     }
@@ -1307,6 +1388,22 @@ fn values_equal(a: &Value, b: &Value) -> bool {
                 None => false,
             }
         }
+        // signal/contract/permit == Err("OwnerGone" | "OwnerCrashed")
+        (Value::Signal(s), Value::Result(Err(e))) |
+        (Value::Result(Err(e)), Value::Signal(s)) => match s.broken_reason() {
+            Some(r) => values_equal(&Value::Str(r.as_str().into()), e),
+            None    => false,
+        },
+        (Value::Contract(c), Value::Result(Err(e))) |
+        (Value::Result(Err(e)), Value::Contract(c)) => match c.broken_reason() {
+            Some(r) => values_equal(&Value::Str(r.as_str().into()), e),
+            None    => false,
+        },
+        (Value::Permit(p), Value::Result(Err(e))) |
+        (Value::Result(Err(e)), Value::Permit(p)) => match p.broken_reason() {
+            Some(r) => values_equal(&Value::Str(r.as_str().into()), e),
+            None    => false,
+        },
         _ => false,
     }
 }

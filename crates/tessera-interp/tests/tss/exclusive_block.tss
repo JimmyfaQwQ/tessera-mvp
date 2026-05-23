@@ -6,6 +6,8 @@ $template MyThread() {
     async handler ping() {
         let step: int = step + 1;
     }
+
+    async function __on_terminate__(): void {}
 }
 
 $MyThread() {
