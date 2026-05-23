@@ -71,6 +71,9 @@ pub enum Token {
     #[token("await")]
     KwAwait,
 
+    #[token("try")]
+    KwTry,
+
     // ── Error / assertion ─────────────────────────────────────────────────────
     #[token("panic")]
     KwPanic,

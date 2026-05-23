@@ -1,12 +1,15 @@
 @template with_workers(worker_count: int) {
     define workers: Queue<thread<worker>>;
     define holders: List<thread<worker_holder>>;
+    define resumed: signal;
 
     function __on_enter__(): void {
         self.workers = Queue<thread<worker>>();
         self.holders = List<thread<worker_holder>>();
+        self.resumed = signal();
+        self.resumed.raise();
         for (let i: int = 0; i < self.worker_count; i = i + 1) {
-            $worker("Worker " + i) {
+            $worker("Worker " + i, self.resumed) {
                 await keepalive();
             } := worker;
             $worker_holder(self.workers, worker) {
@@ -19,9 +22,7 @@
     function __on_exit__(): void {
         for (let i: int = 0; i < self.worker_count; i = i + 1) {
             let holder: thread<worker_holder> = self.holders.get(i);
-            holder.try_terminate();
-            holder.can_terminate.wait();
-            holder.terminate();
+            holder.try_terminate().wait();
         }
     }
 }
@@ -77,64 +78,66 @@ $template reader() {
     }
 }
 
-$template dispatcher(reader_handle: thread<reader>, threads: Queue<thread<worker>>) {
+$template dispatcher(reader_handle: thread<reader>, threads: Queue<thread<worker>>, resumed: signal) {
     async handler run(): void {
         while (true) {
-            let hf: HandlerFuture<String> = self.reader_handle.readLine();
-            if (hf.isErr()) {
+            let r = try await self.reader_handle.readLine();
+            if (r.isErr()) {
+                let e = r.unwrapErr();
+                println("[dispatcher] reader gone (" + e.kind + "), shutting down.");
                 break;
             }
-            let text: String = await hf;
+            let text: String = r.unwrap();
             if (text == "quit") {
                 break;
-            }
-            let worker: Option<thread<worker>> = self.threads.tryPop();
-            if (worker.isSome()) {
-                let w: thread<worker> = worker.unwrap();
-                w.echo(text);
+            } else if (text == "pause") {
+                self.resumed.reset();
+                println("[dispatcher] paused.");
+            } else if (text == "resume") {
+                self.resumed.raise();
+                println("[dispatcher] resumed.");
             } else {
-                println("No available workers to handle the request.");
+                let worker: Option<thread<worker>> = self.threads.tryPop();
+                if (worker.isSome()) {
+                    let w: thread<worker> = worker.unwrap();
+                    w.echo(text);
+                } else {
+                    println("No available workers to handle the request.");
+                }
             }
         }
     }
 }
 
 $template worker_holder(pool: Queue<thread<worker>>, worker: thread<worker>) {
-    expose can_terminate: contract;
-
-    function __on_enter__(): void {
-        self.can_terminate = contract();
-    }
-
     async function run(): void {
         while (true) {
-            await self.worker.available;
-            self.worker.available.reset();
+            let r = try await self.worker.done;
+            if (r.isErr()) {
+                break;
+            }
             self.pool.push(self.worker);
         }
     }
 
     async handler try_terminate(): void {
         await self.worker.terminate();
-        self.can_terminate.fulfill();
-    }
-
-    async function __on_terminate__(): void {
     }
 }
 
-$template worker(name: String) {
-    expose_mutable available: signal;
+$template worker(name: String, resumed: signal) {
+    expose done: contract;
 
     function __on_enter__(): void {
-        self.available = signal();
-        self.available.raise();
+        self.done = contract();
+        self.done.fulfill();
     }
 
     async handler echo(msg: String): void {
+        await self.resumed;
         println("[" + self.name + "] " + msg);
         await asleep(1000);
-        self.available.raise();
+        self.done.fulfill();
     }
 
     async function __on_terminate__(): void {
@@ -164,7 +167,7 @@ while (true) {
 println("启动了 " + worker_count + " 个worker... 输入并回车以分发任务。");
 
 @with_workers(worker_count) {
-    $dispatcher(r, self.workers) {
+    $dispatcher(r, self.workers, self.resumed) {
         await keepalive();
     } := d;
 

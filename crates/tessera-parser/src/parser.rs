@@ -710,6 +710,12 @@ impl Parser {
                 let end = inner.span();
                 Expr::Await(Box::new(AwaitExpr { expr: inner, span: span.merge(end) }))
             }
+            Some(Token::KwTry) => {
+                self.advance();
+                let inner = self.parse_unary();
+                let end = inner.span();
+                Expr::Try(Box::new(TryExpr { expr: inner, span: span.merge(end) }))
+            }
             Some(Token::ParenOpen) => {
                 self.advance();
                 let inner = self.parse_expr();

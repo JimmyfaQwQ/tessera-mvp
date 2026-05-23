@@ -33,6 +33,8 @@ pub enum Type {
     HandlerDispatchError,
     QueuePushError,
     ParseError,
+    /// Structured error value produced by `try` expressions. Carries `.kind` and `.message` fields.
+    ErrorObj,
 
     /// Type of `self` inside a template body — carries the field name→type map.
     TemplateObject(IndexMap<String, Type>),
@@ -76,6 +78,7 @@ impl std::fmt::Display for Type {
             Type::HandlerDispatchError => write!(f, "HandlerDispatchError"),
             Type::QueuePushError => write!(f, "QueuePushError"),
             Type::ParseError => write!(f, "ParseError"),
+            Type::ErrorObj => write!(f, "error"),
             Type::TemplateObject(_) => write!(f, "self"),
             Type::Error => write!(f, "<error>"),
         }

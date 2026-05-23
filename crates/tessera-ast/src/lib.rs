@@ -271,6 +271,7 @@ pub enum Expr {
     FieldAccess(Box<FieldAccessExpr>),
     Index(Box<IndexExpr>),
     Await(Box<AwaitExpr>),
+    Try(Box<TryExpr>),
     Panic(Box<PanicExpr>),
     Assert(Box<AssertExpr>),
     TypeCtor(Box<TypeCtorExpr>),
@@ -288,6 +289,7 @@ impl Expr {
             Expr::FieldAccess(e) => e.span,
             Expr::Index(e) => e.span,
             Expr::Await(e) => e.span,
+            Expr::Try(e) => e.span,
             Expr::Panic(e) => e.span,
             Expr::Assert(e) => e.span,
             Expr::TypeCtor(e) => e.span,
@@ -370,6 +372,12 @@ pub struct IndexExpr {
 
 #[derive(Debug, Clone)]
 pub struct AwaitExpr {
+    pub expr: Expr,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct TryExpr {
     pub expr: Expr,
     pub span: Span,
 }

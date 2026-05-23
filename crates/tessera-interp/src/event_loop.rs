@@ -122,6 +122,25 @@ pub async fn run_thread_task(
         tokio::select! {
             biased;
 
+            // ── Terminate signal (highest priority) ──────────────────────────
+            //
+            // Checked before body_fut so that a concurrent `terminate()` + body
+            // failure (e.g. an awaited signal went Broken because its owning
+            // thread was terminated) always takes the clean shutdown path instead
+            // of the crash path.
+            _ = &mut terminate_rx, if !exclusive => {
+                state.set_status(ThreadStatus::Terminating).await;
+                drain_handlers(&mut handler_rx, HandlerDispatchError::TargetTerminating);
+                run_hook(&interp, decl.as_deref(), "__on_terminate__").await;
+                run_hook(&interp, decl.as_deref(), "__on_exit__").await;
+                state.set_status(ThreadStatus::Terminated).await;
+                if let Some(tx) = result_tx.take() {
+                    let _ = tx.send(FutureOutcome::Ok(Value::Void));
+                }
+                // body_fut is dropped here, abandoning the main body
+                break;
+            }
+
             // ── Main body ────────────────────────────────────────────────────
             result = body_fut.as_mut() => {
                 match result {
@@ -134,10 +153,24 @@ pub async fn run_thread_task(
                         }
                     }
                     Err(e) => {
-                        state.set_status(ThreadStatus::Crashed(e.to_string())).await;
-                        drain_handlers(&mut handler_rx, HandlerDispatchError::TargetCrashed);
-                        if let Some(tx) = result_tx.take() {
-                            let _ = tx.send(FutureOutcome::Failed(e.to_string()));
+                        // Fallback: if body crashes while inside an #exclusive block
+                        // (terminate_rx guard was false), check whether terminate() was
+                        // requested concurrently and honour it rather than crashing.
+                        if terminate_rx.try_recv().is_ok() {
+                            state.set_status(ThreadStatus::Terminating).await;
+                            drain_handlers(&mut handler_rx, HandlerDispatchError::TargetTerminating);
+                            run_hook(&interp, decl.as_deref(), "__on_terminate__").await;
+                            run_hook(&interp, decl.as_deref(), "__on_exit__").await;
+                            state.set_status(ThreadStatus::Terminated).await;
+                            if let Some(tx) = result_tx.take() {
+                                let _ = tx.send(FutureOutcome::Ok(Value::Void));
+                            }
+                        } else {
+                            state.set_status(ThreadStatus::Crashed(e.to_string())).await;
+                            drain_handlers(&mut handler_rx, HandlerDispatchError::TargetCrashed);
+                            if let Some(tx) = result_tx.take() {
+                                let _ = tx.send(FutureOutcome::Failed(e.to_string()));
+                            }
                         }
                     }
                 }
@@ -149,20 +182,6 @@ pub async fn run_thread_task(
                 if let Some(req) = req {
                     dispatch_handler_inline(&interp, decl.as_deref(), req);
                 }
-            }
-
-            // ── Terminate signal ─────────────────────────────────────────────
-            _ = &mut terminate_rx, if !exclusive => {
-                state.set_status(ThreadStatus::Terminating).await;
-                drain_handlers(&mut handler_rx, HandlerDispatchError::TargetTerminating);
-                run_hook(&interp, decl.as_deref(), "__on_terminate__").await;
-                run_hook(&interp, decl.as_deref(), "__on_exit__").await;
-                state.set_status(ThreadStatus::Terminated).await;
-                if let Some(tx) = result_tx.take() {
-                    let _ = tx.send(FutureOutcome::Ok(Value::Void));
-                }
-                // body_fut is dropped here, abandoning the main body
-                break;
             }
         }
     }

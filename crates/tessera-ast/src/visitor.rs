@@ -115,6 +115,7 @@ pub fn walk_expr<V: Visitor>(v: &mut V, e: &Expr) {
         Expr::FieldAccess(f) => v.visit_expr(&f.object),
         Expr::Index(i) => { v.visit_expr(&i.object); v.visit_expr(&i.index); }
         Expr::Await(a) => v.visit_expr(&a.expr),
+        Expr::Try(t) => v.visit_expr(&t.expr),
         Expr::Panic(p) => v.visit_expr(&p.message),
         Expr::Assert(a) => {
             v.visit_expr(&a.condition);

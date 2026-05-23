@@ -40,6 +40,11 @@ pub enum Value {
     /// Implicit `self` object inside thread template methods.
     /// Shared by Rc across all mini-threads spawned from the same template instance.
     Object(Rc<RefCell<HashMap<String, Value>>>),
+
+    /// Structured runtime error produced by `try` expressions.
+    /// `.kind` is a stable identifier (e.g. "OwnerGone", "Panic");
+    /// `.message` is the human-readable description.
+    ErrorObj { kind: String, message: String },
 }
 
 /// Keys valid in a Map (must be hashable).
@@ -87,6 +92,7 @@ impl Value {
             Value::HandlerFuture(_) => "HandlerFuture",
             Value::ThreadHandle(_) => "ThreadHandle",
             Value::Object(_) => "Object",
+            Value::ErrorObj { .. } => "error",
         }
     }
 }

@@ -47,13 +47,59 @@ fn stdin_receiver() -> &'static AsyncMutex<mpsc::Receiver<Option<char>>> {
 use async_recursion::async_recursion;
 use tessera_ast::*;
 use tessera_runtime::{
-    Value, RuntimeError, QueuePushError,
+    Value, RuntimeError, QueuePushError, HandlerDispatchError,
     TesseraLocked, TesseraQueue, TesseraSignal, TesseraContract, TesseraPermit,
     FutureOutcome, TesseraFuture, HandlerResolveResult, ThreadState,
     HandlerRequest, BreakablePrimitive,
 };
 use tessera_runtime::value::ValueKey;
 use crate::env::Env;
+
+// ── Structured-error helpers ──────────────────────────────────────────────────
+
+fn dispatch_error_to_kind(e: &HandlerDispatchError) -> (String, String) {
+    match e {
+        HandlerDispatchError::TargetTerminated  => ("TargetGone".into(),       e.to_string()),
+        HandlerDispatchError::TargetTerminating => ("TargetTerminating".into(), e.to_string()),
+        HandlerDispatchError::TargetCrashed     => ("TargetCrashed".into(),    e.to_string()),
+    }
+}
+
+/// Convert any RuntimeError into a `Value::ErrorObj` for use in `try` results.
+fn runtime_error_to_error_obj(e: &RuntimeError) -> Value {
+    let (kind, message) = match e {
+        RuntimeError::Panic { message, .. } =>
+            ("Panic".into(), message.clone()),
+        RuntimeError::AssertionFailed { message, .. } =>
+            ("AssertionFailed".into(), message.clone()),
+        RuntimeError::IndexOutOfBounds { index, length, .. } =>
+            ("IndexOutOfBounds".into(), format!("index {index}, length {length}")),
+        RuntimeError::DivisionByZero { .. } =>
+            ("DivisionByZero".into(), "division by zero".into()),
+        RuntimeError::UnwrapNone { .. } =>
+            ("UnwrapNone".into(), "unwrap on None".into()),
+        RuntimeError::UnwrapErr { .. } =>
+            ("UnwrapErr".into(), "unwrap on Err".into()),
+        RuntimeError::TypeMismatch { expected, got, .. } =>
+            ("TypeMismatch".into(), format!("expected {expected}, got {got}")),
+        RuntimeError::UndefinedVariable { name, .. } =>
+            ("UndefinedVariable".into(), format!("undefined variable '{name}'")),
+        RuntimeError::ReentrantLock { .. } =>
+            ("ReentrantLock".into(), "reentrant lock".into()),
+        RuntimeError::UnlockNotOwned { .. } =>
+            ("UnlockNotOwned".into(), "unlock not owned".into()),
+        RuntimeError::ExposeMutableFieldReplace { .. } =>
+            ("ExposeMutableFieldReplace".into(), "cannot replace expose_mutable field from outside".into()),
+        RuntimeError::HandlerDispatch(de) => {
+            let (kind, msg) = dispatch_error_to_kind(de);
+            (kind, msg)
+        }
+        RuntimeError::Structured { kind, message, .. } =>
+            (kind.clone(), message.clone()),
+    };
+    Value::ErrorObj { kind, message }
+}
+
 
 // ── Interpreter state (shared via Rc between main body task + handler tasks) ──
 
@@ -505,6 +551,7 @@ impl Interpreter {
             Expr::FieldAccess(f) => self.eval_field_access(f).await,
             Expr::Index(i) => self.eval_index(i).await,
             Expr::Await(a) => self.eval_await(a).await,
+            Expr::Try(t) => self.eval_try(t).await,
             Expr::Panic(p) => {
                 let msg = self.eval_expr(&p.message).await?;
                 Err(RuntimeError::Panic { message: value_to_string(&msg), location: p.span })
@@ -900,10 +947,16 @@ impl Interpreter {
             ("wait", Value::HandlerFuture(hf)) => {
                 match hf.resolve().await {
                     HandlerResolveResult::Ok(v) => Ok(v),
-                    HandlerResolveResult::DispatchFailed(e) =>
-                        Err(RuntimeError::Panic { message: e.to_string(), location: m.span }),
+                    HandlerResolveResult::DispatchFailed(e) => {
+                        let (kind, message) = dispatch_error_to_kind(&e);
+                        Err(RuntimeError::Structured { kind, message, location: m.span })
+                    }
                     HandlerResolveResult::ExecutionFailed(msg) =>
-                        Err(RuntimeError::Panic { message: msg, location: m.span }),
+                        Err(RuntimeError::Structured {
+                            kind: "ExecutionFailed".into(),
+                            message: msg,
+                            location: m.span,
+                        }),
                 }
             }
             ("isDone", Value::HandlerFuture(hf)) => Ok(Value::Bool(hf.is_done())),
@@ -1005,7 +1058,8 @@ impl Interpreter {
             ("wait",     Value::Signal(s)) => {
                 match s.wait().await {
                     Ok(()) => Ok(Value::Void),
-                    Err(r) => Err(RuntimeError::Panic {
+                    Err(r) => Err(RuntimeError::Structured {
+                        kind: r.as_str().into(),
                         message: format!("signal broken: {}", r.as_str()),
                         location: m.span,
                     }),
@@ -1020,7 +1074,8 @@ impl Interpreter {
             ("wait",      Value::Contract(c)) => {
                 match c.wait().await {
                     Ok(()) => Ok(Value::Void),
-                    Err(r) => Err(RuntimeError::Panic {
+                    Err(r) => Err(RuntimeError::Structured {
+                        kind: r.as_str().into(),
                         message: format!("contract broken: {}", r.as_str()),
                         location: m.span,
                     }),
@@ -1054,7 +1109,8 @@ impl Interpreter {
             ("wait",   Value::Permit(p)) => {
                 match p.acquire().await {
                     Ok(()) => Ok(Value::Void),
-                    Err(r) => Err(RuntimeError::Panic {
+                    Err(r) => Err(RuntimeError::Structured {
+                        kind: r.as_str().into(),
                         message: format!("permit broken: {}", r.as_str()),
                         location: m.span,
                     }),
@@ -1106,6 +1162,14 @@ impl Interpreter {
                     }),
                 }
             }
+            Value::ErrorObj { kind, message } => match f.field.name.as_str() {
+                "kind"    => Ok(Value::Str(kind)),
+                "message" => Ok(Value::Str(message)),
+                other => Err(RuntimeError::Panic {
+                    message: format!("no field '{}' on error", other),
+                    location: f.span,
+                }),
+            },
             other => Err(RuntimeError::Panic {
                 message: format!("field access on non-thread type {}", other.type_name()),
                 location: f.span,
@@ -1149,16 +1213,23 @@ impl Interpreter {
             },
             Value::HandlerFuture(hf) => match hf.resolve().await {
                 HandlerResolveResult::Ok(v) => Ok(v),
-                HandlerResolveResult::DispatchFailed(e) =>
-                    Err(RuntimeError::Panic { message: e.to_string(), location: a.span }),
+                HandlerResolveResult::DispatchFailed(e) => {
+                    let (kind, message) = dispatch_error_to_kind(&e);
+                    Err(RuntimeError::Structured { kind, message, location: a.span })
+                }
                 HandlerResolveResult::ExecutionFailed(msg) =>
-                    Err(RuntimeError::Panic { message: msg, location: a.span }),
+                    Err(RuntimeError::Structured {
+                        kind: "ExecutionFailed".into(),
+                        message: msg,
+                        location: a.span,
+                    }),
             },
             // `await s` — panics if signal is broken
             Value::Signal(s) => {
                 match s.wait().await {
                     Ok(()) => Ok(Value::Void),
-                    Err(r) => Err(RuntimeError::Panic {
+                    Err(r) => Err(RuntimeError::Structured {
+                        kind: r.as_str().into(),
                         message: format!("signal broken: {}", r.as_str()),
                         location: a.span,
                     }),
@@ -1168,7 +1239,8 @@ impl Interpreter {
             Value::Contract(c) => {
                 match c.wait().await {
                     Ok(()) => Ok(Value::Void),
-                    Err(r) => Err(RuntimeError::Panic {
+                    Err(r) => Err(RuntimeError::Structured {
+                        kind: r.as_str().into(),
                         message: format!("contract broken: {}", r.as_str()),
                         location: a.span,
                     }),
@@ -1178,13 +1250,24 @@ impl Interpreter {
             Value::Permit(p) => {
                 match p.acquire().await {
                     Ok(()) => Ok(Value::Void),
-                    Err(r) => Err(RuntimeError::Panic {
+                    Err(r) => Err(RuntimeError::Structured {
+                        kind: r.as_str().into(),
                         message: format!("permit broken: {}", r.as_str()),
                         location: a.span,
                     }),
                 }
             }
             other => Ok(other),
+        }
+    }
+
+    async fn eval_try(&self, t: &TryExpr) -> Result<Value, RuntimeError> {
+        match self.eval_expr(&t.expr).await {
+            Ok(v) => Ok(Value::Result(Ok(Box::new(v)))),
+            Err(e) => {
+                let err_obj = runtime_error_to_error_obj(&e);
+                Ok(Value::Result(Err(Box::new(err_obj))))
+            }
         }
     }
 
@@ -1421,6 +1504,7 @@ pub fn value_to_string(v: &Value) -> String {
         Value::Option(Some(v)) => format!("Some({})", value_to_string(v)),
         Value::Result(Ok(v))   => format!("Ok({})", value_to_string(v)),
         Value::Result(Err(e))  => format!("Err({})", value_to_string(e)),
+        Value::ErrorObj { kind, message } => format!("error({kind}: {message})"),
         _ => "<complex>".into(),
     }
 }

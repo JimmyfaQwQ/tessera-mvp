@@ -194,18 +194,25 @@ impl TesseraContract {
     }
 
     /// Consume one notification; suspends if none is available.
-    /// Returns `Err` if broken.
+    /// Returns `Err` if broken with no pending notification.
+    ///
+    /// Pending-before-broken: if `fulfill()` was called before the owner
+    /// crashed, the notification is still deliverable. Check `pending` first
+    /// so that `wait()` succeeds even when `broken` is also set.
     pub async fn wait(&self) -> Result<(), BrokenReason> {
         loop {
             // Pin waiter entry BEFORE checking state (race-free).
             let fut = self.changed.notified();
             {
                 let mut s = self.state.lock().unwrap();
-                if let Some(r) = &s.broken { return Err(r.clone()); }
+                // Consume a pending notification even if the primitive is
+                // already broken: the notification was delivered before the
+                // owner died and must not be silently discarded.
                 if s.pending {
                     s.pending = false;
                     return Ok(());
                 }
+                if let Some(r) = &s.broken { return Err(r.clone()); }
             }
             fut.await;
         }

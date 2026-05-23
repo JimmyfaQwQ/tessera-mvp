@@ -38,6 +38,12 @@ pub enum RuntimeError {
 
     #[error("handler dispatch error: {0}")]
     HandlerDispatch(HandlerDispatchError),
+
+    /// Structured error produced by async-context failures (broken sync primitives,
+    /// handler dispatch/execution failures). `kind` is a stable identifier string;
+    /// `message` is the human-readable description.
+    #[error("[{kind}] {message}")]
+    Structured { kind: String, message: String, location: Span },
 }
 
 impl RuntimeError {
@@ -53,7 +59,8 @@ impl RuntimeError {
             | RuntimeError::UndefinedVariable { location, .. }
             | RuntimeError::ReentrantLock { location }
             | RuntimeError::UnlockNotOwned { location }
-            | RuntimeError::ExposeMutableFieldReplace { location } => *location,
+            | RuntimeError::ExposeMutableFieldReplace { location }
+            | RuntimeError::Structured { location, .. } => *location,
             RuntimeError::HandlerDispatch(_) => Span::dummy(),
         }
     }

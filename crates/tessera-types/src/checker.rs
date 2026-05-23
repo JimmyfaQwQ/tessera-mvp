@@ -392,6 +392,30 @@ impl<'e> TypeChecker<'e> {
                 };
                 // Push scope and inject bindings so the body can see params + define fields.
                 self.env.push_scope();
+                // Build a TemplateObject for `self` so expressions like `self.workers` resolve.
+                let self_fields: IndexMap<String, Type> = match &sb.template {
+                    ScopeTemplateRef::Named(ident) => {
+                        if let Some((_id, info)) = self.env.lookup_template(&ident.name) {
+                            let mut m: IndexMap<String, Type> = IndexMap::new();
+                            for (k, v) in &info.params { m.insert(k.clone(), v.clone()); }
+                            for (k, v) in &info.define_fields { m.insert(k.clone(), v.clone()); }
+                            m
+                        } else {
+                            IndexMap::new()
+                        }
+                    }
+                    ScopeTemplateRef::Anonymous(decl) => {
+                        let mut m: IndexMap<String, Type> = IndexMap::new();
+                        for p in &decl.params { m.insert(p.name.name.clone(), self.resolve_type(&p.ty)); }
+                        for mem in &decl.members {
+                            if let ScopeTemplateMember::Define(e) = mem {
+                                m.insert(e.name.name.clone(), self.resolve_type(&e.ty));
+                            }
+                        }
+                        m
+                    }
+                };
+                self.env.define("self".to_string(), Type::TemplateObject(self_fields));
                 for (name, ty) in scope_bindings {
                     self.env.define(name, ty);
                 }
@@ -522,6 +546,12 @@ impl<'e> TypeChecker<'e> {
             Expr::Panic(_) => Type::Never,
             Expr::Assert(_) => Type::Void,
             Expr::TypeCtor(tc) => self.check_type_ctor(tc),
+            Expr::Try(t) => {
+                let inner_ty = self.check_expr(&t.expr);
+                // `try expr` catches any panic and wraps the result:
+                // Ok(inner_value) or Err(error: ErrorObj).
+                Type::Result(Box::new(inner_ty), Box::new(Type::ErrorObj))
+            }
         }
     }
 
@@ -801,6 +831,13 @@ impl<'e> TypeChecker<'e> {
                 Type::Error
             }
             Type::Error => Type::Error,
+            Type::ErrorObj => match f.field.name.as_str() {
+                "kind" | "message" => Type::TString,
+                _ => {
+                    self.env.error(format!("unknown field '{}' on error", f.field.name), f.field.span);
+                    Type::Error
+                }
+            },
             _ => {
                 self.env.error(format!("field access on non-object type {obj_ty}"), f.field.span);
                 Type::Error
