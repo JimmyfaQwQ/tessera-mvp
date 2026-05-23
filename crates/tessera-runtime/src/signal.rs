@@ -61,6 +61,52 @@ impl TesseraSignal {
     }
 }
 
+/// `permit` — counting semaphore (FIFO).
+///
+/// - `release()` / `release_n(n)` adds permits; wakes queued waiters FIFO.
+/// - `acquire()` consumes one permit; suspends until one is available.
+/// - Concurrent-safe.
+pub struct TesseraPermit {
+    sem: tokio::sync::Semaphore,
+}
+
+impl std::fmt::Debug for TesseraPermit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "permit({})", self.sem.available_permits())
+    }
+}
+
+impl TesseraPermit {
+    pub fn new(initial: i32) -> Self {
+        assert!(initial >= 0, "permit: initial must be non-negative");
+        Self { sem: tokio::sync::Semaphore::new(initial as usize) }
+    }
+
+    /// Return one permit; wake the oldest waiter if any.
+    pub fn release(&self) {
+        self.sem.add_permits(1);
+    }
+
+    /// Return `n` permits. Panics if `n <= 0`.
+    pub fn release_n(&self, n: i32) {
+        assert!(n > 0, "permit: release(n) requires n > 0");
+        self.sem.add_permits(n as usize);
+    }
+
+    /// Snapshot of current available permits.
+    pub fn count(&self) -> i32 {
+        self.sem.available_permits() as i32
+    }
+
+    /// Acquire one permit; suspends (FIFO) until one is available.
+    pub async fn acquire(&self) {
+        // forget() so the permit is not auto-released on drop;
+        // the Tessera program calls release() explicitly.
+        let p = self.sem.acquire().await.unwrap();
+        p.forget();
+    }
+}
+
 /// `contract` — auto-reset single-waiter (FIFO) event.
 ///
 /// - `fulfill()` stores one notification; the next waiter consumes it.

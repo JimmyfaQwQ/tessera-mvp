@@ -2,6 +2,13 @@ use indexmap::IndexMap;
 use crate::ty::{Type, TemplateInfo};
 
 #[derive(Debug, Clone)]
+pub struct FuncSig {
+    pub params: Vec<Type>,
+    pub return_type: Type,
+    pub is_async: bool,
+}
+
+#[derive(Debug, Clone)]
 pub struct Scope {
     pub bindings: IndexMap<String, Type>,
 }
@@ -39,6 +46,7 @@ impl FuncContext {
 pub struct TypeEnv {
     pub scopes: Vec<Scope>,
     pub templates: IndexMap<String, (crate::TemplateId, TemplateInfo)>,
+    pub func_sigs: IndexMap<String, FuncSig>,
     pub current_func: FuncContext,
     pub in_exclusive: bool,
     pub diagnostics: Vec<TypeDiagnostic>,
@@ -50,6 +58,7 @@ impl TypeEnv {
         Self {
             scopes: vec![Scope::new()],
             templates: IndexMap::new(),
+            func_sigs: IndexMap::new(),
             current_func: FuncContext::TopLevel,
             in_exclusive: false,
             diagnostics: Vec::new(),
@@ -69,6 +78,14 @@ impl TypeEnv {
             if let Some(ty) = scope.lookup(name) { return Some(ty); }
         }
         None
+    }
+
+    pub fn register_func_sig(&mut self, name: String, sig: FuncSig) {
+        self.func_sigs.insert(name, sig);
+    }
+
+    pub fn lookup_func_sig(&self, name: &str) -> Option<&FuncSig> {
+        self.func_sigs.get(name)
     }
 
     pub fn register_template(&mut self, name: String, info: TemplateInfo) -> crate::TemplateId {

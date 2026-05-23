@@ -25,10 +25,14 @@ pub enum Type {
     Signal,
     /// Auto-reset single-waiter (FIFO) event.
     Contract,
+    /// Counting semaphore (FIFO).
+    Permit,
 
     ThreadHandle(TemplateId),
 
     HandlerDispatchError,
+    QueuePushError,
+    ParseError,
 
     /// Placeholder for recovery.
     Error,
@@ -36,7 +40,7 @@ pub enum Type {
 
 impl Type {
     pub fn is_concurrent_safe(&self) -> bool {
-        matches!(self, Type::Locked(_) | Type::Queue(_) | Type::Signal | Type::Contract)
+        matches!(self, Type::Locked(_) | Type::Queue(_) | Type::Signal | Type::Contract | Type::Permit)
     }
 
     pub fn is_numeric(&self) -> bool {
@@ -64,8 +68,11 @@ impl std::fmt::Display for Type {
             Type::Queue(t) => write!(f, "Queue<{t}>"),
             Type::Signal => write!(f, "signal"),
             Type::Contract => write!(f, "contract"),
+            Type::Permit => write!(f, "permit"),
             Type::ThreadHandle(id) => write!(f, "ThreadHandle({id})"),
             Type::HandlerDispatchError => write!(f, "HandlerDispatchError"),
+            Type::QueuePushError => write!(f, "QueuePushError"),
+            Type::ParseError => write!(f, "ParseError"),
             Type::Error => write!(f, "<error>"),
         }
     }

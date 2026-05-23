@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-ChildItem \"E:\\\\tessera-mvp\\\\crates\\\\tessera-types\" -Recurse -ErrorAction Stop | ForEach-Object { $_.FullName })"
+    ]
+  }
+}

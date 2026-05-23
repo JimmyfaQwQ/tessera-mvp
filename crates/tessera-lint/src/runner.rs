@@ -21,6 +21,9 @@ impl LintRunner {
                 Box::new(passes::ExposeMutableUnsafe),
                 Box::new(passes::GenericTypeArgMissing),
                 Box::new(passes::TerminateNonTerminatable),
+                Box::new(passes::PermitAwaitInSync),
+                Box::new(passes::PermitWaitInAsync),
+                Box::new(passes::PermitReleaseNonPositive),
             ],
         }
     }

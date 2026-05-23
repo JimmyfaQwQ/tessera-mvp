@@ -232,5 +232,76 @@
       "await ${1:c};"
     ],
     "description": "Await a contract (async context)"
+  },
+  "permit-let": {
+    "prefix": "permit",
+    "body": [
+      "let ${1:sem}: permit = permit(${2:0});"
+    ],
+    "description": "Declare a permit (counting semaphore)"
+  },
+  "permit-pool": {
+    "prefix": "permit-pool",
+    "body": [
+      "let ${1:sem}: permit = permit(${2:N});",
+      "",
+      "// acquire",
+      "await ${1:sem};",
+      "",
+      "// release",
+      "${1:sem}.release();"
+    ],
+    "description": "Resource-pool pattern with permit"
+  },
+  "permit-expose": {
+    "prefix": "expose_permit",
+    "body": [
+      "expose_mutable ${1:name}: permit;",
+      "",
+      "function __on_enter__(): void {",
+      "\t${1:name} = permit(${2:0});",
+      "}"
+    ],
+    "description": "expose_mutable field of type permit with initialiser"
+  },
+  "permit-release": {
+    "prefix": "release",
+    "body": [
+      "${1:sem}.release();"
+    ],
+    "description": "Release one permit"
+  },
+  "permit-await": {
+    "prefix": "await-permit",
+    "body": [
+      "await ${1:sem};"
+    ],
+    "description": "Await a permit (async context)"
+  },
+  "parse-int": {
+    "prefix": "parse-int",
+    "body": [
+      "let ${1:result}: Result<int, ParseError> = ${2:s}.toInt();",
+      "if (${1:result}.isOk()) {",
+      "\tlet ${3:n}: int = ${1:result}.unwrap();",
+      "\t$0",
+      "} else {",
+      "\t// ${1:result}.unwrapErr() contains the error message",
+      "}"
+    ],
+    "description": "Parse a String to int (Result<int, ParseError>)"
+  },
+  "parse-double": {
+    "prefix": "parse-double",
+    "body": [
+      "let ${1:result}: Result<double, ParseError> = ${2:s}.toDouble();",
+      "if (${1:result}.isOk()) {",
+      "\tlet ${3:d}: double = ${1:result}.unwrap();",
+      "\t$0",
+      "} else {",
+      "\t// ${1:result}.unwrapErr() contains the error message",
+      "}"
+    ],
+    "description": "Parse a String to double (Result<double, ParseError>)"
   }
 }

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 
 use crate::{TesseraLocked, TesseraQueue, TesseraFuture, TesseraHandlerFuture, ThreadState,
-            TesseraSignal, TesseraContract};
+            TesseraSignal, TesseraContract, TesseraPermit};
 
 /// Runtime value representation.
 ///
@@ -30,6 +30,7 @@ pub enum Value {
     Queue(Arc<TesseraQueue>),
     Signal(Arc<TesseraSignal>),
     Contract(Arc<TesseraContract>),
+    Permit(Arc<TesseraPermit>),
 
     Future(TesseraFuture),
     HandlerFuture(TesseraHandlerFuture),
@@ -76,6 +77,7 @@ impl Value {
             Value::Queue(_) => "Queue",
             Value::Signal(_) => "signal",
             Value::Contract(_) => "contract",
+            Value::Permit(_) => "permit",
             Value::Future(_) => "Future",
             Value::HandlerFuture(_) => "HandlerFuture",
             Value::ThreadHandle(_) => "ThreadHandle",

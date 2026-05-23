@@ -1,5 +1,5 @@
 use tessera_ast::*;
-use crate::{Type, TypeEnv, FuncContext, TemplateInfo, TemplateKind, HandlerSig, ExposeInfo};
+use crate::{Type, TypeEnv, FuncContext, FuncSig, TemplateInfo, TemplateKind, HandlerSig, ExposeInfo};
 use indexmap::IndexMap;
 
 pub struct TypeChecker<'e> {
@@ -48,6 +48,18 @@ impl<'e> TypeChecker<'e> {
                     }
                 }
                 TopLevelItem::FuncDef(_) | TopLevelItem::Statement(_) => {}
+            }
+        }
+        // Pass 1.5: register top-level function signatures (enables call-site type checks
+        // and gives recursive / mutually-recursive calls a return type to work with).
+        for item in &prog.items {
+            if let TopLevelItem::FuncDef(f) = item {
+                let params: Vec<Type> = f.params.iter()
+                    .map(|p| self.resolve_type(&p.ty))
+                    .collect();
+                let return_type = self.resolve_type(&f.return_type);
+                let is_async = f.kind == FuncKind::Async;
+                self.env.register_func_sig(f.name.name.clone(), FuncSig { params, return_type, is_async });
             }
         }
         // Pass 2: resolve types and fill in the full template info
@@ -258,7 +270,10 @@ impl<'e> TypeChecker<'e> {
             }
             "signal" => Type::Signal,
             "contract" => Type::Contract,
+            "permit" => Type::Permit,
             "HandlerDispatchError" => Type::HandlerDispatchError,
+            "QueuePushError" => Type::QueuePushError,
+            "ParseError" => Type::ParseError,
             "thread" => {
                 // thread<TemplateName> — the type arg names the template
                 if let Some(TypeExpr::Named(ident, _)) = args.first() {
@@ -295,7 +310,23 @@ impl<'e> TypeChecker<'e> {
                 let ty = expected.unwrap_or(actual);
                 self.env.define(l.name.name.clone(), ty);
             }
-            Stmt::Assign(a) => { self.check_expr(&a.value); }
+            Stmt::Assign(a) => {
+                let rhs_ty = self.check_expr(&a.value);
+                // Check that the RHS type is compatible with the declared type of the target.
+                if let AssignTarget::Ident(i) = &a.target {
+                    if let Some(existing) = self.env.lookup(&i.name).cloned() {
+                        if !Self::types_compatible(&existing, &rhs_ty) {
+                            self.env.error(
+                                format!(
+                                    "cannot assign {} to variable '{}' of type {}",
+                                    rhs_ty, i.name, existing
+                                ),
+                                a.span,
+                            );
+                        }
+                    }
+                }
+            }
             Stmt::If(i) => {
                 let cond_ty = self.check_expr(&i.condition);
                 if cond_ty != Type::Bool && cond_ty != Type::Error {
@@ -418,7 +449,7 @@ impl<'e> TypeChecker<'e> {
             Expr::BinOp(b) => self.check_binop(b),
             Expr::UnaryOp(u) => self.check_unary(u),
             Expr::Call(c) => {
-                for arg in &c.args { self.check_expr(arg); }
+                let arg_types: Vec<Type> = c.args.iter().map(|a| self.check_expr(a)).collect();
                 // Recognize well-known builtins with meaningful return types.
                 if let Expr::Ident(i) = &c.callee {
                     match i.name.as_str() {
@@ -427,7 +458,28 @@ impl<'e> TypeChecker<'e> {
                         "print" | "println" | "asleep" => return Type::Void,
                         "signal"   => return Type::Signal,
                         "contract" => return Type::Contract,
-                        _ => {}
+                        "permit"   => return Type::Permit,
+                        name => {
+                            if let Some(sig) = self.env.lookup_func_sig(name).cloned() {
+                                if arg_types.len() != sig.params.len() {
+                                    self.env.error(
+                                        format!("function '{}' expects {} argument(s), got {}",
+                                            name, sig.params.len(), arg_types.len()),
+                                        c.span,
+                                    );
+                                } else {
+                                    for (idx, (expected, got)) in sig.params.iter().zip(arg_types.iter()).enumerate() {
+                                        if !Self::types_compatible(expected, got) {
+                                            self.env.error(
+                                                format!("argument {}: expected {}, got {}", idx + 1, expected, got),
+                                                c.args[idx].span(),
+                                            );
+                                        }
+                                    }
+                                }
+                                return sig.return_type.clone();
+                            }
+                        }
                     }
                 }
                 Type::Error
@@ -446,8 +498,8 @@ impl<'e> TypeChecker<'e> {
                 let inner = self.check_expr(&a.expr);
                 match inner {
                     Type::Future(t) => *t,
-                    // `await s` on a signal/contract resolves to void (spec §11.3.5 / §12.4.4)
-                    Type::Signal | Type::Contract => Type::Void,
+                    // `await s` on a signal/contract/permit resolves to void (spec §11.3.5 / §12.4.4 / §13.4.5)
+                    Type::Signal | Type::Contract | Type::Permit => Type::Void,
                     _ => {
                         if !matches!(self.env.current_func, FuncContext::AsyncFunction { .. } | FuncContext::Handler { .. }) {
                             self.env.error("await can only be used in async functions or handlers", a.span);
@@ -459,6 +511,26 @@ impl<'e> TypeChecker<'e> {
             Expr::Panic(_) => Type::Never,
             Expr::Assert(_) => Type::Void,
             Expr::TypeCtor(tc) => self.check_type_ctor(tc),
+        }
+    }
+
+    /// Returns true if `got` is acceptable where `expected` is declared.
+    /// Silently passes `Type::Error` (already reported) and exact matches.
+    fn types_compatible(expected: &Type, got: &Type) -> bool {
+        if Self::type_contains_error(got) || Self::type_contains_error(expected) { return true; }
+        expected == got
+    }
+
+    fn type_contains_error(t: &Type) -> bool {
+        match t {
+            Type::Error => true,
+            Type::List(inner) | Type::Option(inner) | Type::Future(inner)
+            | Type::HandlerFuture(inner) | Type::Locked(inner) | Type::Queue(inner) => {
+                Self::type_contains_error(inner)
+            }
+            Type::Map(k, v) => Self::type_contains_error(k) || Self::type_contains_error(v),
+            Type::Result(ok, err) => Self::type_contains_error(ok) || Self::type_contains_error(err),
+            _ => false,
         }
     }
 
@@ -523,7 +595,7 @@ impl<'e> TypeChecker<'e> {
             "wait" => {
                 match recv_ty {
                     Type::Future(inner) => *inner,
-                    Type::Signal | Type::Contract => Type::Void,
+                    Type::Signal | Type::Contract | Type::Permit => Type::Void,
                     _ => Type::Error,
                 }
             }
@@ -535,30 +607,81 @@ impl<'e> TypeChecker<'e> {
             "fulfill" => Type::Void,
             "isPending" => Type::Bool,
             "awaitContract" => Type::Void,
+            // permit methods
+            "release" => Type::Void,
+            "count" => {
+                match recv_ty {
+                    Type::Permit => Type::Int,
+                    _ => Type::Error,
+                }
+            }
+            "awaitPermit" => Type::Void,
             "waitHandler" | "awaitHandler" => {
                 match recv_ty {
                     Type::HandlerFuture(inner) => {
-                        // Returns Result<inner, HandlerDispatchError>
-                        Type::Result(inner, Box::new(Type::Error))
+                        Type::Result(inner, Box::new(Type::HandlerDispatchError))
                     }
                     _ => Type::Error,
                 }
             }
             "terminate" => Type::Future(Box::new(Type::Void)),
-            "length" | "size" => Type::Int,
-            "push" | "pop" | "set" | "remove" | "close" => Type::Void,
-            "enqueue" => Type::Void,
-            "dequeue" => {
+            "length" => {
+                match recv_ty {
+                    Type::TString | Type::List(_) => Type::Int,
+                    _ => {
+                        self.env.error(format!("length() is not defined on type {recv_ty}"), m.method.span);
+                        Type::Error
+                    }
+                }
+            }
+            "size" => {
+                match recv_ty {
+                    Type::Map(_, _) | Type::Queue(_) => Type::Int,
+                    _ => {
+                        self.env.error(format!("size() is not defined on type {recv_ty}"), m.method.span);
+                        Type::Error
+                    }
+                }
+            }
+            "push" => {
+                match recv_ty {
+                    Type::List(_) => Type::Void,
+                    Type::Queue(_) => Type::Result(
+                        Box::new(Type::Void),
+                        Box::new(Type::QueuePushError),
+                    ),
+                    _ => Type::Error,
+                }
+            }
+            "pop" => {
+                match recv_ty {
+                    Type::List(inner) => Type::Option(inner),
+                    _ => Type::Error,
+                }
+            }
+            "set" | "close" => Type::Void,
+            "remove" => {
+                match recv_ty {
+                    Type::Map(_, v) => Type::Option(v),
+                    _ => Type::Error,
+                }
+            }
+            "enqueue" | "waitForNonEmpty" => Type::Void,
+            "dequeue" | "tryPop" => {
                 match recv_ty {
                     Type::Queue(inner) => Type::Option(inner),
                     _ => Type::Error,
                 }
             }
-            "isEmpty" => Type::Bool,
+            "tryPush" => Type::Bool,
+            "isEmpty" | "isClosed" => Type::Bool,
+            "lock" | "unlock" => Type::Void,
+            "tryLock" | "isLocked" => Type::Bool,
             "get" => {
                 match recv_ty {
                     Type::List(inner) => *inner,
-                    Type::Map(_, v) => *v,
+                    Type::Map(_, v) => Type::Option(v),
+                    Type::Locked(inner) => *inner,
                     _ => Type::Error,
                 }
             }
@@ -580,6 +703,45 @@ impl<'e> TypeChecker<'e> {
                 match recv_ty {
                     Type::Option(inner) | Type::Result(inner, _) => *inner,
                     _ => Type::Error,
+                }
+            }
+            // ── Type conversion methods ────────────────────────────────────────
+            "toString" => {
+                match recv_ty {
+                    Type::Int | Type::Double | Type::Char | Type::Bool => Type::TString,
+                    _ => {
+                        self.env.error(format!("toString() is not defined on type {recv_ty}"), m.method.span);
+                        Type::Error
+                    }
+                }
+            }
+            "toInt" => {
+                match recv_ty {
+                    Type::Double | Type::Char => Type::Int,
+                    Type::TString => Type::Result(Box::new(Type::Int), Box::new(Type::ParseError)),
+                    _ => {
+                        self.env.error(format!("toInt() is not defined on type {recv_ty}"), m.method.span);
+                        Type::Error
+                    }
+                }
+            }
+            "toDouble" => {
+                match recv_ty {
+                    Type::Int => Type::Double,
+                    Type::TString => Type::Result(Box::new(Type::Double), Box::new(Type::ParseError)),
+                    _ => {
+                        self.env.error(format!("toDouble() is not defined on type {recv_ty}"), m.method.span);
+                        Type::Error
+                    }
+                }
+            }
+            "toChar" => {
+                match recv_ty {
+                    Type::Int => Type::Option(Box::new(Type::Char)),
+                    _ => {
+                        self.env.error(format!("toChar() is not defined on type {recv_ty}"), m.method.span);
+                        Type::Error
+                    }
                 }
             }
             _ => {

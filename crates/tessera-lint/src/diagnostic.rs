@@ -21,6 +21,10 @@ impl Diagnostic {
         Self { rule_id, severity: Severity::Error, message: message.into(), primary_span: span, help: None }
     }
 
+    pub fn warn(rule_id: &'static str, message: impl Into<String>, span: Span) -> Self {
+        Self { rule_id, severity: Severity::Warn, message: message.into(), primary_span: span, help: None }
+    }
+
     pub fn with_help(mut self, help: impl Into<String>) -> Self {
         self.help = Some(help.into());
         self

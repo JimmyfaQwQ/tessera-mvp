@@ -47,10 +47,11 @@ fn stdin_receiver() -> &'static AsyncMutex<mpsc::Receiver<Option<char>>> {
 use async_recursion::async_recursion;
 use tessera_ast::*;
 use tessera_runtime::{
-    Value, RuntimeError,
-    TesseraLocked, TesseraQueue, TesseraSignal, TesseraContract, FutureOutcome, ThreadState,
+    Value, RuntimeError, QueuePushError,
+    TesseraLocked, TesseraQueue, TesseraSignal, TesseraContract, TesseraPermit, FutureOutcome, ThreadState,
     HandlerRequest,
 };
+use tessera_runtime::value::ValueKey;
 use crate::env::Env;
 
 // ── Interpreter state (shared via Rc between main body task + handler tasks) ──
@@ -156,6 +157,21 @@ impl Interpreter {
                 let v = self.eval_expr(&a.value).await?;
                 match &a.target {
                     AssignTarget::Ident(i) => {
+                        // Type guard: new value must match the type of the existing variable.
+                        // Allow void -> T (void is the sentinel for uninitialized define fields).
+                        if let Some(existing) = self.0.env.borrow().lookup(&i.name).cloned() {
+                            let old_ty = existing.type_name();
+                            let new_ty = v.type_name();
+                            if old_ty != "void" && old_ty != new_ty {
+                                return Err(RuntimeError::Panic {
+                                    message: format!(
+                                        "cannot assign {} to variable '{}' of type {}",
+                                        new_ty, i.name, old_ty
+                                    ),
+                                    location: a.span,
+                                });
+                            }
+                        }
                         self.maybe_sync_expose(&i.name, &v);
                         if !self.0.env.borrow_mut().assign(&i.name, v) {
                             return Err(RuntimeError::UndefinedVariable {
@@ -517,6 +533,8 @@ impl Interpreter {
                         let v = self.eval_expr(arg).await?;
                         print!("{}", value_to_string(&v));
                     }
+                    use std::io::Write;
+                    let _ = std::io::stdout().flush();
                     return Ok(Value::Void);
                 }
                 "println" => {
@@ -567,6 +585,26 @@ impl Interpreter {
                 "contract" => {
                     return Ok(Value::Contract(Arc::new(TesseraContract::new())));
                 }
+                "permit" => {
+                    let initial = if let Some(arg) = c.args.first() {
+                        match self.eval_expr(arg).await? {
+                            Value::Int(n) => n,
+                            _ => return Err(RuntimeError::Panic {
+                                message: "permit: initial must be an int".into(),
+                                location: c.span,
+                            }),
+                        }
+                    } else {
+                        0
+                    };
+                    if initial < 0 {
+                        return Err(RuntimeError::Panic {
+                            message: format!("permit: initial must be non-negative, got {initial}"),
+                            location: c.span,
+                        });
+                    }
+                    return Ok(Value::Permit(Arc::new(TesseraPermit::new(initial))));
+                }
                 name => {
                     // Look up user-defined function
                     let func = self.0.func_table.borrow().get(name).cloned();
@@ -575,6 +613,10 @@ impl Interpreter {
                         for a in &c.args { args.push(self.eval_expr(a).await?); }
                         return self.call_func(&func, args).await;
                     }
+                    return Err(RuntimeError::Panic {
+                        message: format!("unknown function '{name}'"),
+                        location: c.span,
+                    });
                 }
             }
         }
@@ -582,6 +624,32 @@ impl Interpreter {
     }
 
     pub async fn call_func(&self, func: &FuncDef, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        // Arity check
+        let min_args = func.params.iter().filter(|p| p.default.is_none()).count();
+        let max_args = func.params.len();
+        if args.len() < min_args || args.len() > max_args {
+            return Err(RuntimeError::Panic {
+                message: format!(
+                    "function '{}' expects {} argument(s), got {}",
+                    func.name.name, max_args, args.len()
+                ),
+                location: func.span,
+            });
+        }
+        // Type check each argument against its declared parameter type
+        for (param, val) in func.params.iter().zip(args.iter()) {
+            if !runtime_type_matches(&param.ty, val) {
+                return Err(RuntimeError::Panic {
+                    message: format!(
+                        "argument '{}': expected {}, got {}",
+                        param.name.name,
+                        type_expr_display(&param.ty),
+                        val.type_name()
+                    ),
+                    location: param.span,
+                });
+            }
+        }
         self.0.env.borrow_mut().push_scope();
         for (param, val) in func.params.iter().zip(args.into_iter()) {
             self.0.env.borrow_mut().define(param.name.name.clone(), val);
@@ -602,7 +670,7 @@ impl Interpreter {
         for a in &m.args { args.push(self.eval_expr(a).await?); }
 
         match (&m.method.name[..], recv.clone()) {
-            // Option
+            // ── Option ────────────────────────────────────────────────────────
             ("isSome", Value::Option(v)) => Ok(Value::Bool(v.is_some())),
             ("isNone", Value::Option(v)) => Ok(Value::Bool(v.is_none())),
             ("unwrap", Value::Option(Some(v))) => Ok(*v),
@@ -610,17 +678,42 @@ impl Interpreter {
             ("unwrapOr", Value::Option(Some(v))) => Ok(*v),
             ("unwrapOr", Value::Option(None)) => Ok(args.into_iter().next().unwrap_or(Value::Void)),
 
-            // Result
+            // ── Result ────────────────────────────────────────────────────────
             ("isOk",  Value::Result(r)) => Ok(Value::Bool(r.is_ok())),
             ("isErr", Value::Result(r)) => Ok(Value::Bool(r.is_err())),
             ("unwrap",    Value::Result(Ok(v)))  => Ok(*v),
             ("unwrap",    Value::Result(Err(_))) => Err(RuntimeError::UnwrapErr { location: m.span }),
             ("unwrapErr", Value::Result(Err(e))) => Ok(*e),
+            ("unwrapErr", Value::Result(Ok(_)))  => Err(RuntimeError::UnwrapErr { location: m.span }),
             ("unwrapOr",  Value::Result(Ok(v)))  => Ok(*v),
             ("unwrapOr",  Value::Result(Err(_))) => Ok(args.into_iter().next().unwrap_or(Value::Void)),
 
-            // List
+            // ── List ──────────────────────────────────────────────────────────
             ("length", Value::List(l)) => Ok(Value::Int(l.borrow().len() as i32)),
+            ("length", Value::Str(s))  => Ok(Value::Int(s.chars().count() as i32)),
+            ("isEmpty", Value::List(l)) => Ok(Value::Bool(l.borrow().is_empty())),
+
+            // ── Type conversions ───────────────────────────────────────────────
+            ("toString", Value::Int(n))    => Ok(Value::Str(n.to_string())),
+            ("toString", Value::Double(f)) => Ok(Value::Str(f.to_string())),
+            ("toString", Value::Char(c))   => Ok(Value::Str(c.to_string())),
+            ("toString", Value::Bool(b))   => Ok(Value::Str(b.to_string())),
+            ("toInt",    Value::Double(f)) => Ok(Value::Int(f as i32)),
+            ("toInt",    Value::Char(c))   => Ok(Value::Int(c as i32)),
+            ("toInt",    Value::Str(s)) => Ok(Value::Result(
+                s.trim().parse::<i32>()
+                    .map(|n| Box::new(Value::Int(n)))
+                    .map_err(|e| Box::new(Value::Str(e.to_string())))
+            )),
+            ("toDouble", Value::Int(n))  => Ok(Value::Double(n as f64)),
+            ("toDouble", Value::Str(s))  => Ok(Value::Result(
+                s.trim().parse::<f64>()
+                    .map(|f| Box::new(Value::Double(f)))
+                    .map_err(|e| Box::new(Value::Str(e.to_string())))
+            )),
+            ("toChar",   Value::Int(n)) => Ok(Value::Option(
+                char::from_u32(n as u32).map(|c| Box::new(Value::Char(c)))
+            )),
             ("push", Value::List(l)) => {
                 l.borrow_mut().push(args.into_iter().next().unwrap_or(Value::Void));
                 Ok(Value::Void)
@@ -635,24 +728,74 @@ impl Interpreter {
                     let l = l.borrow();
                     let idx = *i as usize;
                     if idx >= l.len() {
-                        return Err(RuntimeError::IndexOutOfBounds { index: *i, length: l.len() as i32, location: m.span });
+                        return Err(RuntimeError::IndexOutOfBounds {
+                            index: *i, length: l.len() as i32, location: m.span,
+                        });
                     }
                     Ok(l[idx].clone())
-                } else { Ok(Value::Void) }
+                } else {
+                    Err(RuntimeError::Panic {
+                        message: "List.get() requires an int index".into(),
+                        location: m.span,
+                    })
+                }
             }
             ("set", Value::List(l)) => {
                 if let (Some(Value::Int(i)), Some(v)) = (args.first(), args.get(1)) {
                     let mut l = l.borrow_mut();
                     let idx = *i as usize;
                     if idx >= l.len() {
-                        return Err(RuntimeError::IndexOutOfBounds { index: *i, length: l.len() as i32, location: m.span });
+                        return Err(RuntimeError::IndexOutOfBounds {
+                            index: *i, length: l.len() as i32, location: m.span,
+                        });
                     }
                     l[idx] = v.clone();
+                    Ok(Value::Void)
+                } else {
+                    Err(RuntimeError::Panic {
+                        message: "List.set() requires an int index and a value".into(),
+                        location: m.span,
+                    })
+                }
+            }
+
+            // ── Map ───────────────────────────────────────────────────────────
+            ("size", Value::Map(m_val)) => Ok(Value::Int(m_val.borrow().len() as i32)),
+            ("get", Value::Map(m_val)) => {
+                let key = args.into_iter().next();
+                let result = key.and_then(|k| {
+                    ValueKey::try_from(k).ok()
+                        .and_then(|vk| m_val.borrow().get(&vk).cloned())
+                });
+                Ok(Value::Option(result.map(Box::new)))
+            }
+            ("set", Value::Map(m_val)) => {
+                if let (Some(key), Some(val)) = (args.first().cloned(), args.get(1).cloned()) {
+                    match ValueKey::try_from(key) {
+                        Ok(vk) => { m_val.borrow_mut().insert(vk, val); }
+                        Err(_) => return Err(RuntimeError::Panic {
+                            message: "Map.set() key type is not hashable (must be bool/int/char/String)".into(),
+                            location: m.span,
+                        }),
+                    }
+                } else {
+                    return Err(RuntimeError::Panic {
+                        message: "Map.set() requires a key and a value".into(),
+                        location: m.span,
+                    });
                 }
                 Ok(Value::Void)
             }
+            ("remove", Value::Map(m_val)) => {
+                let key = args.into_iter().next();
+                let removed = key.and_then(|k| {
+                    ValueKey::try_from(k).ok()
+                        .and_then(|vk| m_val.borrow_mut().shift_remove(&vk))
+                });
+                Ok(Value::Option(removed.map(Box::new)))
+            }
 
-            // Future .wait()
+            // ── Future .wait() ────────────────────────────────────────────────
             ("wait", Value::Future(fut)) => {
                 match fut.resolve().await {
                     FutureOutcome::Ok(v) => Ok(v),
@@ -660,7 +803,7 @@ impl Interpreter {
                 }
             }
 
-            // HandlerFuture .waitHandler() / .awaitHandler()
+            // ── HandlerFuture .waitHandler() / .awaitHandler() ────────────────
             ("waitHandler" | "awaitHandler", Value::HandlerFuture(hf)) => {
                 match hf.resolve().await {
                     Ok(v)  => Ok(Value::Result(Ok(Box::new(v)))),
@@ -668,15 +811,14 @@ impl Interpreter {
                 }
             }
 
-            // ThreadHandle .terminate()
+            // ── ThreadHandle .terminate() ─────────────────────────────────────
             ("terminate", Value::ThreadHandle(state)) => {
                 let fut = state.terminate().await;
                 Ok(Value::Future(fut))
             }
 
-            // ThreadHandle handler calls: handle.methodName(args...)
+            // ── ThreadHandle handler calls ────────────────────────────────────
             (method, Value::ThreadHandle(state)) => {
-                // Dispatch handler
                 let hf_result = state.dispatch_handler(method.to_string(), args).await;
                 match hf_result {
                     Ok(fut) => Ok(Value::HandlerFuture(tessera_runtime::TesseraHandlerFuture::from_future(fut))),
@@ -684,21 +826,61 @@ impl Interpreter {
                 }
             }
 
-            // Queue
+            // ── Queue ─────────────────────────────────────────────────────────
+            ("push", Value::Queue(q)) => {
+                let v = args.into_iter().next().unwrap_or(Value::Void);
+                match q.push(v) {
+                    Ok(()) => Ok(Value::Result(Ok(Box::new(Value::Void)))),
+                    Err(QueuePushError::Full)   => Ok(Value::Result(Err(Box::new(Value::Str("Full".into()))))),
+                    Err(QueuePushError::Closed) => Ok(Value::Result(Err(Box::new(Value::Str("Closed".into()))))),
+                }
+            }
             ("enqueue", Value::Queue(q)) => {
                 let v = args.into_iter().next().unwrap_or(Value::Void);
-                q.enqueue(v).await;
+                if !q.enqueue(v).await {
+                    return Err(RuntimeError::Panic {
+                        message: "QueueClosed".into(),
+                        location: m.span,
+                    });
+                }
                 Ok(Value::Void)
             }
             ("dequeue", Value::Queue(q)) => Ok(Value::Option(q.dequeue().await.map(Box::new))),
-            ("tryPush",  Value::Queue(q)) => {
+            ("tryPush", Value::Queue(q)) => {
                 let v = args.into_iter().next().unwrap_or(Value::Void);
                 Ok(Value::Bool(q.try_push(v)))
             }
             ("tryPop", Value::Queue(q)) => Ok(Value::Option(q.try_pop().map(Box::new))),
-            ("close",  Value::Queue(q)) => { q.close(); Ok(Value::Void) }
+            ("size",    Value::Queue(q)) => Ok(Value::Int(q.size() as i32)),
+            ("isEmpty", Value::Queue(q)) => Ok(Value::Bool(q.is_empty())),
+            ("isClosed",Value::Queue(q)) => Ok(Value::Bool(q.is_closed())),
+            ("waitForNonEmpty", Value::Queue(q)) => { q.wait_for_non_empty().await; Ok(Value::Void) }
+            ("close",   Value::Queue(q)) => { q.close(); Ok(Value::Void) }
 
-            // locked<T>
+            // ── locked<T> ─────────────────────────────────────────────────────
+            ("lock", Value::Locked(l)) => {
+                let owner_id = self.current_thread_id();
+                match l.lock(owner_id).await {
+                    Ok(()) => Ok(Value::Void),
+                    Err(()) => Err(RuntimeError::ReentrantLock { location: m.span }),
+                }
+            }
+            ("tryLock", Value::Locked(l)) => {
+                let owner_id = self.current_thread_id();
+                match l.try_lock(owner_id) {
+                    Ok(acquired) => Ok(Value::Bool(acquired)),
+                    Err(()) => Err(RuntimeError::ReentrantLock { location: m.span }),
+                }
+            }
+            ("unlock", Value::Locked(l)) => {
+                let owner_id = self.current_thread_id();
+                if l.unlock(owner_id) {
+                    Ok(Value::Void)
+                } else {
+                    Err(RuntimeError::UnlockNotOwned { location: m.span })
+                }
+            }
+            ("isLocked", Value::Locked(l)) => Ok(Value::Bool(l.is_locked())),
             ("get", Value::Locked(l)) => Ok(l.get().await),
             ("set", Value::Locked(l)) => {
                 let v = args.into_iter().next().unwrap_or(Value::Void);
@@ -706,21 +888,58 @@ impl Interpreter {
                 Ok(Value::Void)
             }
 
-            // signal
+            // ── signal ────────────────────────────────────────────────────────
             ("raise",       Value::Signal(s)) => { s.raise();    Ok(Value::Void) }
             ("reset",       Value::Signal(s)) => { s.reset();    Ok(Value::Void) }
             ("isRaised",    Value::Signal(s)) => Ok(Value::Bool(s.is_raised())),
             ("wait",        Value::Signal(s)) => { s.wait().await; Ok(Value::Void) }
             ("awaitSignal", Value::Signal(s)) => { s.wait().await; Ok(Value::Void) }
 
-            // contract
-            ("fulfill",        Value::Contract(c)) => { c.fulfill(); Ok(Value::Void) }
-            ("isPending",      Value::Contract(c)) => Ok(Value::Bool(c.is_pending())),
-            ("wait",           Value::Contract(c)) => { c.wait().await; Ok(Value::Void) }
-            ("awaitContract",  Value::Contract(c)) => { c.wait().await; Ok(Value::Void) }
+            // ── contract ──────────────────────────────────────────────────────
+            ("fulfill",       Value::Contract(c)) => { c.fulfill(); Ok(Value::Void) }
+            ("isPending",     Value::Contract(c)) => Ok(Value::Bool(c.is_pending())),
+            ("wait",          Value::Contract(c)) => { c.wait().await; Ok(Value::Void) }
+            ("awaitContract", Value::Contract(c)) => { c.wait().await; Ok(Value::Void) }
 
-            _ => Ok(Value::Void),
+            // ── permit ────────────────────────────────────────────────────────
+            ("release", Value::Permit(p)) => {
+                let n = args.into_iter().next();
+                match n {
+                    Some(Value::Int(n)) => {
+                        if n <= 0 {
+                            return Err(RuntimeError::Panic {
+                                message: format!("permit.release(n): n must be positive, got {n}"),
+                                location: m.span,
+                            });
+                        }
+                        p.release_n(n);
+                    }
+                    None => p.release(),
+                    _ => return Err(RuntimeError::Panic {
+                        message: "permit.release(n): n must be an int".into(),
+                        location: m.span,
+                    }),
+                }
+                Ok(Value::Void)
+            }
+            ("count",        Value::Permit(p)) => Ok(Value::Int(p.count())),
+            ("wait",         Value::Permit(p)) => { p.acquire().await; Ok(Value::Void) }
+            ("awaitPermit",  Value::Permit(p)) => { p.acquire().await; Ok(Value::Void) }
+
+            (method, recv) => Err(RuntimeError::Panic {
+                message: format!("no method '{}' on type {}", method, recv.type_name()),
+                location: m.span,
+            }),
         }
+    }
+
+    /// Returns the current Tessera thread's stable identifier (Arc pointer address).
+    /// Used as owner_id for `locked<T>` explicit locking.
+    fn current_thread_id(&self) -> usize {
+        self.0.current_thread_state.borrow()
+            .as_ref()
+            .map(|arc| Arc::as_ptr(arc) as usize)
+            .unwrap_or(0)
     }
 
     // ── Field access (Gap 3e) ─────────────────────────────────────────────────
@@ -735,9 +954,18 @@ impl Interpreter {
                     return Ok(v);
                 }
                 let val = state.expose_mutable_fields.read().await.get(&f.field.name).cloned();
-                Ok(val.unwrap_or(Value::Void))
+                match val {
+                    Some(v) => Ok(v),
+                    None => Err(RuntimeError::Panic {
+                        message: format!("no field '{}' on thread handle", f.field.name),
+                        location: f.span,
+                    }),
+                }
             }
-            _ => Ok(Value::Void),
+            other => Err(RuntimeError::Panic {
+                message: format!("field access on non-thread type {}", other.type_name()),
+                location: f.span,
+            }),
         }
     }
 
@@ -753,7 +981,18 @@ impl Interpreter {
                 }
                 Ok(l[ui].clone())
             }
-            _ => Ok(Value::Void),
+            (Value::Str(s), Value::Int(n)) => {
+                let ui = n as usize;
+                let chars: Vec<char> = s.chars().collect();
+                if ui >= chars.len() {
+                    return Err(RuntimeError::IndexOutOfBounds { index: n, length: chars.len() as i32, location: i.span });
+                }
+                Ok(Value::Char(chars[ui]))
+            }
+            (obj, idx) => Err(RuntimeError::Panic {
+                message: format!("index operator not supported: {}[{}]", obj.type_name(), idx.type_name()),
+                location: i.span,
+            }),
         }
     }
 
@@ -772,6 +1011,8 @@ impl Interpreter {
             Value::Signal(s) => { s.wait().await; Ok(Value::Void) }
             // `await c` is equivalent to c.awaitContract() — spec §12.4.4
             Value::Contract(c) => { c.wait().await; Ok(Value::Void) }
+            // `await p` is equivalent to p.awaitPermit() — spec §13.4.5
+            Value::Permit(p) => { p.acquire().await; Ok(Value::Void) }
             other => Ok(other),
         }
     }
@@ -785,12 +1026,21 @@ impl Interpreter {
             "Some" => Ok(Value::Option(Some(Box::new(args.into_iter().next().unwrap_or(Value::Void))))),
             "None" => Ok(Value::Option(None)),
             "List" => Ok(Value::List(Rc::new(RefCell::new(args)))),
+            "Map"  => Ok(Value::Map(Rc::new(RefCell::new(indexmap::IndexMap::new())))),
             "locked" => {
                 let initial = args.into_iter().next().unwrap_or(Value::Void);
                 Ok(Value::Locked(Arc::new(TesseraLocked::new(initial))))
             }
-            "Queue" => Ok(Value::Queue(Arc::new(TesseraQueue::new()))),
-            _ => Ok(Value::Void),
+            "Queue" => {
+                let capacity = args.first()
+                    .and_then(|v| if let Value::Int(n) = v { Some(*n) } else { None })
+                    .unwrap_or(0);
+                Ok(Value::Queue(Arc::new(TesseraQueue::new(capacity))))
+            }
+            name => Err(RuntimeError::Panic {
+                message: format!("unknown type constructor '{name}'"),
+                location: tc.span,
+            }),
         }
     }
 
@@ -866,6 +1116,55 @@ pub fn find_handler<'a>(decl: &'a ThreadTemplateDecl, name: &str) -> Option<&'a 
         }
     }
     None
+}
+
+// ── Runtime argument type helpers ─────────────────────────────────────────────
+
+/// Check if `val` is compatible with the declared parameter type `te`.
+/// Unknown / unrecognised type annotations are skipped (returns true).
+fn runtime_type_matches(te: &tessera_ast::TypeExpr, val: &Value) -> bool {
+    match te {
+        tessera_ast::TypeExpr::Void  => matches!(val, Value::Void),
+        tessera_ast::TypeExpr::Never => false,
+        tessera_ast::TypeExpr::Named(ident, _) => {
+            let expected = match ident.name.as_str() {
+                "bool"    => "bool",
+                "int"     => "int",
+                "double"  => "double",
+                "char"    => "char",
+                "String"  => "String",
+                "void"    => return matches!(val, Value::Void),
+                "never"   => return false,
+                "List"    => "List",
+                "Map"     => "Map",
+                "Option"  => "Option",
+                "Result"  => "Result",
+                "locked"  => "locked",
+                "Queue"   => "Queue",
+                "signal"  => "signal",
+                "contract" => "contract",
+                "permit"  => "permit",
+                "Future"  => "Future",
+                "HandlerFuture" => "HandlerFuture",
+                "thread"  => "ThreadHandle",
+                _ => return true, // unknown annotation — don't reject
+            };
+            val.type_name() == expected
+        }
+    }
+}
+
+/// Human-readable name for a `TypeExpr`, used in error messages.
+fn type_expr_display(te: &tessera_ast::TypeExpr) -> String {
+    match te {
+        tessera_ast::TypeExpr::Void => "void".to_string(),
+        tessera_ast::TypeExpr::Never => "never".to_string(),
+        tessera_ast::TypeExpr::Named(ident, args) if args.is_empty() => ident.name.clone(),
+        tessera_ast::TypeExpr::Named(ident, args) => {
+            let inner: Vec<String> = args.iter().map(type_expr_display).collect();
+            format!("{}<{}>", ident.name, inner.join(", "))
+        }
+    }
 }
 
 // ── Literal evaluation ────────────────────────────────────────────────────────

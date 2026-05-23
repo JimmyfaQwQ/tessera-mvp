@@ -1,28 +1,35 @@
 @template with_workers(worker_count: int) {
-    define workers: List<thread<worker>>;
+    define workers: Queue<thread<worker>>;
+    define holders: List<thread<worker_holder>>;
 
     function __on_enter__(): void {
-        workers = List<thread<worker>>();
+        workers = Queue<thread<worker>>();
+        holders = List<thread<worker_holder>>();
         for (let i: int = 0; i < worker_count; i = i + 1) {
-            $worker("Worker-" + i) {
+            $worker("Worker " + i) {
                 await keepalive();
-            } := w;
-            workers.push(w);
+            } := worker;
+            $worker_holder(workers, worker) {
+                await run();
+            } := holder;
+            holders.push(holder);
         }
     }
+
     function __on_exit__(): void {
-        for (let i = 0; i < workers.length(); i = i + 1) {
-            workers[i].terminate().wait();
+        for (let i: int = 0; i < worker_count; i = i + 1) {
+            let w: thread<worker> = workers.dequeue().unwrap();
+            w.terminate();
         }
     }
 }
 
 $template reader() {
-    define line_available: contract;
+    define line_available: permit;
     define line: Queue<String>;
 
     function __on_enter__(): void {
-        line_available = contract();
+        line_available = permit();
         line = Queue<String>();
     }
 
@@ -37,7 +44,7 @@ $template reader() {
                 if (buf != "") {
                     #exclusive {
                         line.enqueue(buf);
-                        line_available.fulfill();
+                        line_available.release();
                     }
                 }
                 break;
@@ -46,7 +53,7 @@ $template reader() {
             if (c == '\n') {
                 #exclusive {
                     line.enqueue(buf);
-                    line_available.fulfill();
+                    line_available.release();
                 }
                 buf = "";
             } else if (c == '\r') {
@@ -58,19 +65,17 @@ $template reader() {
     }
 
     async handler readLine(): String {
+        print("> ");
         await line_available;
         let result: String = "";
         #exclusive {
             result = line.dequeue().unwrap();
-            if (line.isEmpty()) {
-                line_available = false;
-            }
         }
         return result;
     }
 }
 
-$template dispatcher(reader_handle: thread<reader>, threads: List<thread<worker>>) {
+$template dispatcher(reader_handle: thread<reader>, threads: Queue<thread<worker>>) {
     async handler run(): void {
         while (true) {
             let res: Result<String, HandlerDispatchError> = reader_handle.readLine().waitHandler();
@@ -81,19 +86,23 @@ $template dispatcher(reader_handle: thread<reader>, threads: List<thread<worker>
             if (text == "quit") {
                 break;
             }
-            let assigned: bool = false;
-            for (let i = 0; i < threads.length(); i = i + 1) {
-                let worker_thread: thread<worker> = threads[i];
-                if (worker_thread.available.isRaised()) {
-                    worker_thread.available.reset();
-                    worker_thread.echo(text);
-                    assigned = true;
-                    break;
-                }
+            let worker: Option<thread<worker>> = threads.tryPop();
+            if (worker.isSome()) {
+                let w: thread<worker> = worker.unwrap();
+                w.echo(text);
+            } else {
+                println("No available workers to handle the request.");
             }
-            if (!assigned) {
-                println("[Dispatcher] No available worker for: " + text);
-            }
+        }
+    }
+}
+
+$template worker_holder(pool: Queue<thread<worker>>, worker: thread<worker>) {
+    async function run(): void {
+        while (true) {
+            await worker.available;
+            worker.available.reset();
+            pool.push(worker);
         }
     }
 }
@@ -117,13 +126,28 @@ $template worker(name: String) {
     }
 }
 
-@with_workers(3) {
-    println("Echo server — 输入 quit 退出");
+println("Echo server — 输入 quit 退出");
 
-    $reader() {
-        await run();
-    } := r;
+$reader() {
+    await run();
+} := r;
 
+println("请输入worker数量：");
+let worker_count: int = 0;
+while (true) {
+    let line: Result<String, HandlerDispatchError> = r.readLine().waitHandler();
+    let parsed: Result<int, ParseError> = line.unwrap().toInt();
+    if (parsed.isOk()) {
+        worker_count = parsed.unwrap();
+        break;
+    } else {
+        println("请输入一个有效的整数：");
+    }
+}
+
+println("启动了 " + worker_count + " 个worker... 输入并回车以分发任务。");
+
+@with_workers(worker_count) {
     $dispatcher(r, workers) {
         await keepalive();
     } := d;
