@@ -65,6 +65,9 @@ pub struct InterpState {
     pub current_thread_state: RefCell<Option<Arc<ThreadState>>>,
     pub expose_field_names: RefCell<HashSet<String>>,
     pub expose_mutable_field_names: RefCell<HashSet<String>>,
+    /// Shared field storage for the current thread template instance.
+    /// All mini-threads spawned from this template share the same Rc.
+    pub template_self: RefCell<Option<Rc<RefCell<HashMap<String, Value>>>>>,
 }
 
 impl InterpState {
@@ -77,10 +80,11 @@ impl InterpState {
             current_thread_state: RefCell::new(None),
             expose_field_names: RefCell::new(HashSet::new()),
             expose_mutable_field_names: RefCell::new(HashSet::new()),
+            template_self: RefCell::new(None),
         }
     }
 
-    /// Create a child state for a spawned thread: shares template tables, fresh env.
+    /// Create a child state for a spawned Tessera thread: shares template tables, fresh env.
     pub fn new_for_thread(parent: &Rc<InterpState>) -> Rc<InterpState> {
         Rc::new(InterpState {
             env: RefCell::new(Env::new()),
@@ -90,6 +94,24 @@ impl InterpState {
             current_thread_state: RefCell::new(None),
             expose_field_names: RefCell::new(HashSet::new()),
             expose_mutable_field_names: RefCell::new(HashSet::new()),
+            template_self: RefCell::new(None),
+        })
+    }
+
+    /// Create a child state for a mini-thread (top-level async function call):
+    /// fresh local env, but shares template_self Rc and thread-state for expose sync.
+    pub fn new_for_mini_thread(parent: &Rc<InterpState>) -> Rc<InterpState> {
+        Rc::new(InterpState {
+            env: RefCell::new(Env::new()),
+            func_table: RefCell::new(parent.func_table.borrow().clone()),
+            scope_templates: RefCell::new(parent.scope_templates.borrow().clone()),
+            thread_templates: RefCell::new(parent.thread_templates.borrow().clone()),
+            // Share thread state so expose sync works from mini-threads
+            current_thread_state: RefCell::new(parent.current_thread_state.borrow().clone()),
+            expose_field_names: RefCell::new(parent.expose_field_names.borrow().clone()),
+            expose_mutable_field_names: RefCell::new(parent.expose_mutable_field_names.borrow().clone()),
+            // Share the same Rc so mini-threads see template fields
+            template_self: RefCell::new(parent.template_self.borrow().clone()),
         })
     }
 }
@@ -106,6 +128,10 @@ impl Interpreter {
 
     pub fn new_for_thread(parent: &Interpreter) -> Self {
         Self(InterpState::new_for_thread(&parent.0))
+    }
+
+    pub fn new_for_mini_thread(parent: &Interpreter) -> Self {
+        Self(InterpState::new_for_mini_thread(&parent.0))
     }
 
     // ── Program entry ─────────────────────────────────────────────────────────
@@ -183,13 +209,26 @@ impl Interpreter {
                     }
                     AssignTarget::Field(obj_expr, field) => {
                         let obj = self.eval_expr(obj_expr).await?;
-                        if let Value::ThreadHandle(state) = obj {
-                            // Only allow writing if it is NOT an expose_mutable field —
-                            // expose_mutable exposes the value for mutation via its own
-                            // methods (.get()/.set()), but the field reference itself
-                            // cannot be replaced from outside.
-                            if state.expose_mutable_fields.read().await.contains_key(&field.name) {
-                                return Err(RuntimeError::ExposeMutableFieldReplace {
+                        match obj {
+                            Value::Object(map) => {
+                                // self.fieldName = value inside a template method
+                                map.borrow_mut().insert(field.name.clone(), v.clone());
+                                self.maybe_sync_expose(&field.name, &v);
+                            }
+                            Value::ThreadHandle(state) => {
+                                // Only allow writing if it is NOT an expose_mutable field —
+                                // expose_mutable exposes the value for mutation via its own
+                                // methods (.get()/.set()), but the field reference itself
+                                // cannot be replaced from outside.
+                                if state.expose_mutable_fields.read().await.contains_key(&field.name) {
+                                    return Err(RuntimeError::ExposeMutableFieldReplace {
+                                        location: a.span,
+                                    });
+                                }
+                            }
+                            other => {
+                                return Err(RuntimeError::Panic {
+                                    message: format!("field assignment on non-object type {}", other.type_name()),
                                     location: a.span,
                                 });
                             }
@@ -329,9 +368,12 @@ impl Interpreter {
         // Bind args to params in a new scope
         self.0.env.borrow_mut().push_scope();
         if let Some(decl) = &decl {
+            // Build self_map for scope template fields so `self.xxx` works.
+            let self_map: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<String, Value>>> =
+                std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashMap::new()));
             for (param, arg_expr) in decl.params.iter().zip(sb.args.iter()) {
                 let v = self.eval_expr(arg_expr).await?;
-                self.0.env.borrow_mut().define(param.name.name.clone(), v);
+                self_map.borrow_mut().insert(param.name.name.clone(), v);
             }
             // Initialize define fields before __on_enter__
             for m in &decl.members {
@@ -341,9 +383,11 @@ impl Interpreter {
                     } else {
                         crate::event_loop::default_value_for_type(&e.ty)
                     };
-                    self.0.env.borrow_mut().define(e.name.name.clone(), val);
+                    self_map.borrow_mut().insert(e.name.name.clone(), val);
                 }
             }
+            // Bind `self` in env so __on_enter__ / __on_exit__ / body can access fields via self.xxx.
+            self.0.env.borrow_mut().define("self".to_string(), Value::Object(self_map));
             // Run __on_enter__
             if let Some(on_enter) = find_scope_hook(decl, "__on_enter__") {
                 self.exec_block(&on_enter.body).await?;
@@ -423,6 +467,20 @@ impl Interpreter {
         match e {
             Expr::Lit(l) => Ok(eval_literal(l)),
             Expr::Ident(i) => {
+                // `self` is a special identifier — always refers to the current template instance.
+                if i.name == "self" {
+                    if let Some(obj) = self.0.template_self.borrow().clone() {
+                        return Ok(Value::Object(obj));
+                    }
+                    // Fall back to env lookup (scope template binds `self` as Value::Object in env).
+                    if let Some(val) = self.0.env.borrow().lookup("self").cloned() {
+                        return Ok(val);
+                    }
+                    return Err(RuntimeError::Panic {
+                        message: "`self` is not available outside a template".into(),
+                        location: i.span,
+                    });
+                }
                 let val = self.0.env.borrow().lookup(&i.name).cloned();
                 val.ok_or_else(|| RuntimeError::UndefinedVariable {
                     name: i.name.clone(),
@@ -612,15 +670,26 @@ impl Interpreter {
                     if let Some(func) = func {
                         let mut args = Vec::new();
                         for a in &c.args { args.push(self.eval_expr(a).await?); }
-                        let result = self.call_func(&func, args).await;
-                        // Async functions return Future<T>; wrap eagerly-executed result.
                         if func.kind == FuncKind::Async {
-                            let outcome = match result {
-                                Ok(v)  => FutureOutcome::Ok(v),
-                                Err(e) => FutureOutcome::Failed(e.to_string()),
-                            };
-                            return Ok(Value::Future(TesseraFuture::immediate(outcome)));
+                            // All async function calls spawn a mini-thread.
+                            // The mini-thread shares template_self (if any) and current_thread_state
+                            // for expose sync, but gets a fresh local variable env.
+                            let (tx, rx) = tokio::sync::oneshot::channel::<FutureOutcome>();
+                            let child = Interpreter::new_for_mini_thread(self);
+                            // Bind `self` in the mini-thread's env if we have a template_self.
+                            if let Some(obj) = child.0.template_self.borrow().clone() {
+                                child.0.env.borrow_mut().define("self".to_string(), Value::Object(obj));
+                            }
+                            tokio::task::spawn_local(async move {
+                                let outcome = match child.call_func(&func, args).await {
+                                    Ok(v)  => FutureOutcome::Ok(v),
+                                    Err(e) => FutureOutcome::Failed(e.to_string()),
+                                };
+                                let _ = tx.send(outcome);
+                            });
+                            return Ok(Value::Future(TesseraFuture::new(rx)));
                         }
+                        let result = self.call_func(&func, args).await;
                         return result;
                     }
                     return Err(RuntimeError::Panic {
@@ -977,6 +1046,15 @@ impl Interpreter {
                     Some(v) => Ok(v),
                     None => Err(RuntimeError::Panic {
                         message: format!("no field '{}' on thread handle", f.field.name),
+                        location: f.span,
+                    }),
+                }
+            }
+            Value::Object(map) => {
+                match map.borrow().get(&f.field.name).cloned() {
+                    Some(v) => Ok(v),
+                    None => Err(RuntimeError::Panic {
+                        message: format!("no field '{}' on self", f.field.name),
                         location: f.span,
                     }),
                 }

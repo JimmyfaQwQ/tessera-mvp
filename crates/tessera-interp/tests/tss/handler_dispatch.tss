@@ -1,13 +1,17 @@
 $template Counter() {
     expose count: int;
 
+    function __on_enter__(): void {
+        self.count = 0;
+    }
+
     async handler increment() {
-        let count: int = count + 1;
+        self.count = self.count + 1;
     }
 }
 
 $Counter() {
-    let count: int = 0;
+    await keepalive();
 } := ctr;
 
 let hf1: HandlerFuture<void> = ctr.increment();

@@ -30,10 +30,10 @@
 
 @template Traced(label: String, logQueue: Queue<String>) {
     function __on_enter__(): void {
-        logQueue.tryPush(">> [" + label + "] 开始");
+        self.logQueue.tryPush(">> [" + self.label + "] 开始");
     }
     function __on_exit__(): void {
-        logQueue.tryPush("<< [" + label + "] 结束");
+        self.logQueue.tryPush("<< [" + self.label + "] 结束");
     }
 }
 
@@ -48,22 +48,22 @@ $template Logger(q: Queue<String>) {
     expose logCount: int;
 
     function __on_enter__(): void {
-        logCount = 0;
+        self.logCount = 0;
         println("[Logger] 启动");
     }
 
     function __on_exit__(): void {
-        println("[Logger] 关闭，共处理 " + logCount + " 条日志");
+        println("[Logger] 关闭，共处理 " + self.logCount + " 条日志");
     }
 
     async function run(): void {
         while (true) {
-            let msg: Option<String> = await q.dequeue();
+            let msg: Option<String> = await self.q.dequeue();
             if (msg.isNone()) {
                 break;
             }
             println("[LOG] " + msg.unwrap());
-            logCount = logCount + 1;
+            self.logCount = self.logCount + 1;
         }
     }
 }
@@ -84,33 +84,33 @@ $template Worker(id: int, jobs: Queue<String>, logQueue: Queue<String>, total: l
     expose_mutable shared: locked<int>;   // 外部可通过 .get()/.set() 读写内容，但不能替换字段引用本身
 
     function __on_enter__(): void {
-        tasksCompleted = 0;
-        shared = locked(0);   // expose_mutable 字段在内部像普通变量一样初始化
-        logQueue.tryPush("Worker#" + id + " 就绪");
+        self.tasksCompleted = 0;
+        self.shared = locked(0);   // expose_mutable 字段在内部像普通变量一样初始化
+        self.logQueue.tryPush("Worker#" + self.id + " 就绪");
     }
 
     // 定义此函数 => 该线程实例为 terminatable
     async function __on_terminate__(): void {
-        logQueue.tryPush("Worker#" + id + " 收到终止，已完成=" + tasksCompleted + "，清理中...");
+        self.logQueue.tryPush("Worker#" + self.id + " 收到终止，已完成=" + self.tasksCompleted + "，清理中...");
         await asleep(30);
-        logQueue.tryPush("Worker#" + id + " 清理完毕");
+        self.logQueue.tryPush("Worker#" + self.id + " 清理完毕");
     }
 
     async function processJob(job: String): void {
         await asleep(20);
-        tasksCompleted = tasksCompleted + 1;
+        self.tasksCompleted = self.tasksCompleted + 1;
         // 更新全局聚合计数（locked<int> 参数）
-        let cur: int = total.get();
-        total.set(cur + 1);
+        let cur: int = self.total.get();
+        self.total.set(cur + 1);
         // 同时把本 worker 完成数写进 expose_mutable shared（外部可通过 .get()/.set() 读写）
-        let s: int = shared.get();
-        shared.set(s + 1);
-        logQueue.tryPush("Worker#" + id + " 完成: " + job);
+        let s: int = self.shared.get();
+        self.shared.set(s + 1);
+        self.logQueue.tryPush("Worker#" + self.id + " 完成: " + job);
     }
 
     async function run(): void {
         while (true) {
-            let opt: Option<String> = await jobs.dequeue();
+            let opt: Option<String> = await self.jobs.dequeue();
             if (opt.isNone()) {
                 break;
             }
@@ -120,7 +120,7 @@ $template Worker(id: int, jobs: Queue<String>, logQueue: Queue<String>, total: l
 
     // handler：在 Worker 自己的事件循环内执行，安全访问 tasksCompleted
     async handler status(): String {
-        return "Worker#" + id + " [已完成=" + tasksCompleted + "]";
+        return "Worker#" + self.id + " [已完成=" + self.tasksCompleted + "]";
     }
 }
 

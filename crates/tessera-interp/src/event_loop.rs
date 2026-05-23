@@ -39,18 +39,22 @@ pub async fn run_thread_task(
                 interp.0.func_table.borrow_mut().insert(f.name.name.clone(), Arc::new(f.clone()));
             }
         }
-        // Pre-define expose / expose_mutable / define fields with type-default values.
+
+        // Initialize template_self: the shared Object that methods access via `self`.
+        let self_map: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<String, Value>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashMap::new()));
+        *interp.0.template_self.borrow_mut() = Some(self_map.clone());
+
+        // Pre-populate template_self with default values for declared fields.
         for m in &d.members {
             match m {
                 ThreadTemplateMember::Expose(e) => {
                     interp.0.expose_field_names.borrow_mut().insert(e.name.name.clone());
-                    let default = default_value_for_type(&e.ty);
-                    interp.0.env.borrow_mut().define(e.name.name.clone(), default);
+                    self_map.borrow_mut().insert(e.name.name.clone(), default_value_for_type(&e.ty));
                 }
                 ThreadTemplateMember::ExposeMutable(e) => {
                     interp.0.expose_mutable_field_names.borrow_mut().insert(e.name.name.clone());
-                    let default = default_value_for_type(&e.ty);
-                    interp.0.env.borrow_mut().define(e.name.name.clone(), default);
+                    self_map.borrow_mut().insert(e.name.name.clone(), default_value_for_type(&e.ty));
                 }
                 ThreadTemplateMember::Define(e) => {
                     let val = if let Some(init) = &e.initializer {
@@ -61,15 +65,18 @@ pub async fn run_thread_task(
                     } else {
                         default_value_for_type(&e.ty)
                     };
-                    interp.0.env.borrow_mut().define(e.name.name.clone(), val);
+                    self_map.borrow_mut().insert(e.name.name.clone(), val);
                 }
                 _ => {}
             }
         }
-        // Bind template params
+        // Bind template params into template_self (so mini-threads can access via self.paramName).
         for (param, val) in d.params.iter().zip(args.into_iter()) {
-            interp.0.env.borrow_mut().define(param.name.name.clone(), val);
+            self_map.borrow_mut().insert(param.name.name.clone(), val);
         }
+
+        // Bind `self` in the interpreter env so template methods can access it.
+        interp.0.env.borrow_mut().define("self".to_string(), Value::Object(self_map));
     }
 
     // ── __on_enter__ ─────────────────────────────────────────────────────────

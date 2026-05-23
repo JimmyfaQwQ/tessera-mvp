@@ -1,9 +1,9 @@
 @template MyScope(counter: locked<int>) {
     function __on_enter__(): void {
-        counter.set(counter.get() + 1);
+        self.counter.set(self.counter.get() + 1);
     }
     function __on_exit__(): void {
-        counter.set(counter.get() + 10);
+        self.counter.set(self.counter.get() + 10);
     }
 }
 

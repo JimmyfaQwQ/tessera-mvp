@@ -3,24 +3,24 @@
     define holders: List<thread<worker_holder>>;
 
     function __on_enter__(): void {
-        workers = Queue<thread<worker>>();
-        holders = List<thread<worker_holder>>();
-        for (let i: int = 0; i < worker_count; i = i + 1) {
+        self.workers = Queue<thread<worker>>();
+        self.holders = List<thread<worker_holder>>();
+        for (let i: int = 0; i < self.worker_count; i = i + 1) {
             $worker("Worker " + i) {
                 await keepalive();
             } := worker;
-            $worker_holder(workers, worker) {
+            $worker_holder(self.workers, worker) {
                 await run();
             } := holder;
-            holders.push(holder);
+            self.holders.push(holder);
         }
     }
 
     function __on_exit__(): void {
-        for (let i: int = 0; i < worker_count; i = i + 1) {
-            let holder: thread<worker_holder> = holders.get(i);
+        for (let i: int = 0; i < self.worker_count; i = i + 1) {
+            let holder: thread<worker_holder> = self.holders.get(i);
             holder.try_terminate();
-            holder.can_terminate;
+            holder.can_terminate.wait();
             holder.terminate();
         }
     }
@@ -31,8 +31,8 @@ $template reader() {
     define line: Queue<String>;
 
     function __on_enter__(): void {
-        line_available = permit();
-        line = Queue<String>();
+        self.line_available = permit();
+        self.line = Queue<String>();
     }
 
     function __on_exit__(): void {
@@ -45,8 +45,8 @@ $template reader() {
             if (ch.isNone()) {
                 if (buf != "") {
                     #exclusive {
-                        line.enqueue(buf);
-                        line_available.release();
+                        self.line.enqueue(buf);
+                        self.line_available.release();
                     }
                 }
                 break;
@@ -54,8 +54,8 @@ $template reader() {
             let c: char = ch.unwrap();
             if (c == '\n') {
                 #exclusive {
-                    line.enqueue(buf);
-                    line_available.release();
+                    self.line.enqueue(buf);
+                    self.line_available.release();
                 }
                 buf = "";
             } else if (c == '\r') {
@@ -68,10 +68,10 @@ $template reader() {
 
     async handler readLine(): String {
         print("> ");
-        await line_available;
+        await self.line_available;
         let result: String = "";
         #exclusive {
-            result = line.dequeue().unwrap();
+            result = self.line.dequeue().unwrap();
         }
         return result;
     }
@@ -80,7 +80,7 @@ $template reader() {
 $template dispatcher(reader_handle: thread<reader>, threads: Queue<thread<worker>>) {
     async handler run(): void {
         while (true) {
-            let hf: HandlerFuture<String> = reader_handle.readLine();
+            let hf: HandlerFuture<String> = self.reader_handle.readLine();
             if (hf.isErr()) {
                 break;
             }
@@ -88,7 +88,7 @@ $template dispatcher(reader_handle: thread<reader>, threads: Queue<thread<worker
             if (text == "quit") {
                 break;
             }
-            let worker: Option<thread<worker>> = threads.tryPop();
+            let worker: Option<thread<worker>> = self.threads.tryPop();
             if (worker.isSome()) {
                 let w: thread<worker> = worker.unwrap();
                 w.echo(text);
@@ -103,20 +103,20 @@ $template worker_holder(pool: Queue<thread<worker>>, worker: thread<worker>) {
     expose can_terminate: contract;
 
     function __on_enter__(): void {
-        can_terminate = contract();
+        self.can_terminate = contract();
     }
 
     async function run(): void {
         while (true) {
-            await worker.available;
-            worker.available.reset();
-            pool.push(worker);
+            await self.worker.available;
+            self.worker.available.reset();
+            self.pool.push(self.worker);
         }
     }
 
     async handler try_terminate(): void {
-        await worker.terminate();
-        can_terminate.fulfill();
+        await self.worker.terminate();
+        self.can_terminate.fulfill();
     }
 }
 
@@ -124,18 +124,18 @@ $template worker(name: String) {
     expose_mutable available: signal;
 
     function __on_enter__(): void {
-        available = signal();
-        available.raise();
+        self.available = signal();
+        self.available.raise();
     }
 
     async handler echo(msg: String): void {
-        println("[" + name + "] " + msg);
+        println("[" + self.name + "] " + msg);
         await asleep(1000);
-        available.raise();
+        self.available.raise();
     }
 
     async function __on_terminate__(): void {
-        println("[" + name + "] Terminating");
+        println("[" + self.name + "] Terminating");
     }
 }
 

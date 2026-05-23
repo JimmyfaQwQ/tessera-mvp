@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 use indexmap::IndexMap;
@@ -35,6 +36,10 @@ pub enum Value {
     Future(TesseraFuture),
     HandlerFuture(TesseraHandlerFuture),
     ThreadHandle(Arc<ThreadState>),
+
+    /// Implicit `self` object inside thread template methods.
+    /// Shared by Rc across all mini-threads spawned from the same template instance.
+    Object(Rc<RefCell<HashMap<String, Value>>>),
 }
 
 /// Keys valid in a Map (must be hashable).
@@ -81,6 +86,7 @@ impl Value {
             Value::Future(_) => "Future",
             Value::HandlerFuture(_) => "HandlerFuture",
             Value::ThreadHandle(_) => "ThreadHandle",
+            Value::Object(_) => "Object",
         }
     }
 }

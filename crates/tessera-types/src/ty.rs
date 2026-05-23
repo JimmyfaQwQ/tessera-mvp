@@ -2,7 +2,7 @@ use indexmap::IndexMap;
 
 pub type TemplateId = usize;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
     Bool,
     Int,
@@ -33,6 +33,9 @@ pub enum Type {
     HandlerDispatchError,
     QueuePushError,
     ParseError,
+
+    /// Type of `self` inside a template body — carries the field name→type map.
+    TemplateObject(IndexMap<String, Type>),
 
     /// Placeholder for recovery.
     Error,
@@ -73,6 +76,7 @@ impl std::fmt::Display for Type {
             Type::HandlerDispatchError => write!(f, "HandlerDispatchError"),
             Type::QueuePushError => write!(f, "QueuePushError"),
             Type::ParseError => write!(f, "ParseError"),
+            Type::TemplateObject(_) => write!(f, "self"),
             Type::Error => write!(f, "<error>"),
         }
     }

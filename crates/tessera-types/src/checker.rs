@@ -144,44 +144,48 @@ impl<'e> TypeChecker<'e> {
     // ── Template body checking ────────────────────────────────────────────────
 
     fn check_scope_template_bodies(&mut self, d: &ScopeTemplateDecl) {
-        let mut bindings: Vec<(String, Type)> = d.params.iter()
-            .map(|p| (p.name.name.clone(), self.resolve_type(&p.ty)))
-            .collect();
+        let mut self_fields: IndexMap<String, Type> = IndexMap::new();
+        for p in &d.params {
+            self_fields.insert(p.name.name.clone(), self.resolve_type(&p.ty));
+        }
         for m in &d.members {
             if let ScopeTemplateMember::Define(e) = m {
-                bindings.push((e.name.name.clone(), self.resolve_type(&e.ty)));
+                self_fields.insert(e.name.name.clone(), self.resolve_type(&e.ty));
             }
         }
+        let self_binding = vec![("self".to_string(), Type::TemplateObject(self_fields))];
         for m in &d.members {
             let func = match m {
                 ScopeTemplateMember::OnEnter(f) | ScopeTemplateMember::OnExit(f) | ScopeTemplateMember::MemberFunc(f) => f,
                 ScopeTemplateMember::Define(_) => continue,
             };
-            self.check_func_body(func, &bindings);
+            self.check_func_body(func, &self_binding);
         }
     }
 
     fn check_thread_template_bodies(&mut self, d: &ThreadTemplateDecl) {
-        let mut bindings: Vec<(String, Type)> = d.params.iter()
-            .map(|p| (p.name.name.clone(), self.resolve_type(&p.ty)))
-            .collect();
+        let mut self_fields: IndexMap<String, Type> = IndexMap::new();
+        for p in &d.params {
+            self_fields.insert(p.name.name.clone(), self.resolve_type(&p.ty));
+        }
         for m in &d.members {
             match m {
                 ThreadTemplateMember::Expose(e) | ThreadTemplateMember::ExposeMutable(e) | ThreadTemplateMember::Define(e) => {
-                    bindings.push((e.name.name.clone(), self.resolve_type(&e.ty)));
+                    self_fields.insert(e.name.name.clone(), self.resolve_type(&e.ty));
                 }
                 _ => {}
             }
         }
+        let self_binding = vec![("self".to_string(), Type::TemplateObject(self_fields))];
 
         for m in &d.members {
             match m {
                 ThreadTemplateMember::OnEnter(f) | ThreadTemplateMember::OnExit(f)
                 | ThreadTemplateMember::OnTerminate(f) | ThreadTemplateMember::MemberFunc(f) => {
-                    self.check_func_body(f, &bindings);
+                    self.check_func_body(f, &self_binding);
                 }
                 ThreadTemplateMember::Handler(h) => {
-                    self.check_handler_body(h, &bindings);
+                    self.check_handler_body(h, &self_binding);
                 }
                 _ => {}
             }
@@ -777,19 +781,31 @@ impl<'e> TypeChecker<'e> {
 
     fn check_field_access(&mut self, f: &FieldAccessExpr) -> Type {
         let obj_ty = self.check_expr(&f.object);
-        if let Type::ThreadHandle(id) = obj_ty {
-            for (_, (tid, info)) in &self.env.templates {
-                if *tid == id {
-                    if let Some(ei) = info.expose_fields.get(&f.field.name) {
-                        return ei.ty.clone();
+        match obj_ty {
+            Type::TemplateObject(ref fields) => {
+                if let Some(ty) = fields.get(&f.field.name) {
+                    return ty.clone();
+                }
+                self.env.error(format!("unknown field '{}' on self", f.field.name), f.field.span);
+                Type::Error
+            }
+            Type::ThreadHandle(id) => {
+                for (_, (tid, info)) in &self.env.templates {
+                    if *tid == id {
+                        if let Some(ei) = info.expose_fields.get(&f.field.name) {
+                            return ei.ty.clone();
+                        }
                     }
                 }
+                self.env.error(format!("unknown field '{}' on thread handle", f.field.name), f.field.span);
+                Type::Error
             }
-            self.env.error(format!("unknown field '{}' on thread handle", f.field.name), f.field.span);
-        } else if obj_ty != Type::Error {
-            self.env.error(format!("field access on non-thread type {obj_ty}", ), f.field.span);
+            Type::Error => Type::Error,
+            _ => {
+                self.env.error(format!("field access on non-object type {obj_ty}"), f.field.span);
+                Type::Error
+            }
         }
-        Type::Error
     }
 
     fn check_type_ctor(&mut self, tc: &TypeCtorExpr) -> Type {
