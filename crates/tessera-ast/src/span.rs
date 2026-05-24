@@ -19,4 +19,18 @@ impl Span {
     pub fn dummy() -> Self {
         Self { start: 0, end: 0 }
     }
+
+    pub fn len(self) -> usize {
+        self.end.saturating_sub(self.start)
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.end <= self.start
+    }
+}
+
+impl From<Span> for miette::SourceSpan {
+    fn from(s: Span) -> Self {
+        miette::SourceSpan::new(s.start.into(), s.end.saturating_sub(s.start))
+    }
 }

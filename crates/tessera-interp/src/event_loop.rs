@@ -61,7 +61,18 @@ pub async fn run_thread_task(
                     let val = if let Some(init) = &e.initializer {
                         match interp.eval_expr(init).await {
                             Ok(v) => v,
-                            Err(_) => default_value_for_type(&e.ty),
+                            // A field initializer that fails is a real error: crash
+                            // the thread instead of silently substituting a default.
+                            // Dropping `ready_tx` (by returning) unblocks the parent's
+                            // `ready_rx.await`, which ignores the receive error.
+                            Err(err) => {
+                                state.set_status(ThreadStatus::Crashed(err.to_string())).await;
+                                drain_handlers(&mut handler_rx, HandlerDispatchError::TargetCrashed);
+                                if let Some(b) = state.take_terminate_bundle().await {
+                                    let _ = b.result_tx.send(FutureOutcome::Failed(err.to_string()));
+                                }
+                                return;
+                            }
                         }
                     } else {
                         default_value_for_type(&e.ty)
@@ -131,11 +142,19 @@ pub async fn run_thread_task(
             _ = &mut terminate_rx, if !exclusive => {
                 state.set_status(ThreadStatus::Terminating).await;
                 drain_handlers(&mut handler_rx, HandlerDispatchError::TargetTerminating);
-                run_hook(&interp, decl.as_deref(), "__on_terminate__").await;
-                run_hook(&interp, decl.as_deref(), "__on_exit__").await;
-                state.set_status(ThreadStatus::Terminated).await;
-                if let Some(tx) = result_tx.take() {
-                    let _ = tx.send(FutureOutcome::Ok(Value::Void));
+                match run_teardown_hooks(&interp, decl.as_deref(), true).await {
+                    Ok(()) => {
+                        state.set_status(ThreadStatus::Terminated).await;
+                        if let Some(tx) = result_tx.take() {
+                            let _ = tx.send(FutureOutcome::Ok(Value::Void));
+                        }
+                    }
+                    Err(e) => {
+                        state.set_status(ThreadStatus::Crashed(e.to_string())).await;
+                        if let Some(tx) = result_tx.take() {
+                            let _ = tx.send(FutureOutcome::Failed(e.to_string()));
+                        }
+                    }
                 }
                 // body_fut is dropped here, abandoning the main body
                 break;
@@ -145,11 +164,22 @@ pub async fn run_thread_task(
             result = body_fut.as_mut() => {
                 match result {
                     Ok(_) => {
-                        run_hook(&interp, decl.as_deref(), "__on_exit__").await;
-                        state.set_status(ThreadStatus::Terminated).await;
-                        drain_handlers(&mut handler_rx, HandlerDispatchError::TargetTerminated);
-                        if let Some(tx) = result_tx.take() {
-                            let _ = tx.send(FutureOutcome::Ok(Value::Void));
+                        let hook_result = run_hook(&interp, decl.as_deref(), "__on_exit__").await;
+                        match hook_result {
+                            Ok(()) => {
+                                state.set_status(ThreadStatus::Terminated).await;
+                                drain_handlers(&mut handler_rx, HandlerDispatchError::TargetTerminated);
+                                if let Some(tx) = result_tx.take() {
+                                    let _ = tx.send(FutureOutcome::Ok(Value::Void));
+                                }
+                            }
+                            Err(e) => {
+                                state.set_status(ThreadStatus::Crashed(e.to_string())).await;
+                                drain_handlers(&mut handler_rx, HandlerDispatchError::TargetCrashed);
+                                if let Some(tx) = result_tx.take() {
+                                    let _ = tx.send(FutureOutcome::Failed(e.to_string()));
+                                }
+                            }
                         }
                     }
                     Err(e) => {
@@ -159,11 +189,19 @@ pub async fn run_thread_task(
                         if terminate_rx.try_recv().is_ok() {
                             state.set_status(ThreadStatus::Terminating).await;
                             drain_handlers(&mut handler_rx, HandlerDispatchError::TargetTerminating);
-                            run_hook(&interp, decl.as_deref(), "__on_terminate__").await;
-                            run_hook(&interp, decl.as_deref(), "__on_exit__").await;
-                            state.set_status(ThreadStatus::Terminated).await;
-                            if let Some(tx) = result_tx.take() {
-                                let _ = tx.send(FutureOutcome::Ok(Value::Void));
+                            match run_teardown_hooks(&interp, decl.as_deref(), true).await {
+                                Ok(()) => {
+                                    state.set_status(ThreadStatus::Terminated).await;
+                                    if let Some(tx) = result_tx.take() {
+                                        let _ = tx.send(FutureOutcome::Ok(Value::Void));
+                                    }
+                                }
+                                Err(he) => {
+                                    state.set_status(ThreadStatus::Crashed(he.to_string())).await;
+                                    if let Some(tx) = result_tx.take() {
+                                        let _ = tx.send(FutureOutcome::Failed(he.to_string()));
+                                    }
+                                }
                             }
                         } else {
                             state.set_status(ThreadStatus::Crashed(e.to_string())).await;
@@ -228,17 +266,42 @@ fn dispatch_handler_inline(
     }
 }
 
-/// Run a named lifecycle hook if present. Errors are silently ignored.
+/// Run a named lifecycle hook if present, propagating any error it raises so
+/// the caller can surface it (previously these errors were silently dropped).
 async fn run_hook(
     interp: &Interpreter,
     decl: Option<&ThreadTemplateDecl>,
     name: &str,
-) {
+) -> Result<(), tessera_runtime::RuntimeError> {
     if let Some(d) = decl {
         if let Some(hook) = find_thread_hook(d, name) {
             let hook = hook.clone();
-            let _ = interp.exec_func_def_body(&hook, vec![]).await;
+            interp.exec_func_def_body(&hook, vec![]).await?;
         }
+    }
+    Ok(())
+}
+
+/// Run teardown hooks (`__on_terminate__` optionally, then `__on_exit__`). Both
+/// always run so cleanup is not skipped, but the first error is returned so the
+/// caller can mark the thread crashed instead of silently dropping it.
+async fn run_teardown_hooks(
+    interp: &Interpreter,
+    decl: Option<&ThreadTemplateDecl>,
+    run_terminate: bool,
+) -> Result<(), tessera_runtime::RuntimeError> {
+    let mut first_err = None;
+    if run_terminate {
+        if let Err(e) = run_hook(interp, decl, "__on_terminate__").await {
+            first_err.get_or_insert(e);
+        }
+    }
+    if let Err(e) = run_hook(interp, decl, "__on_exit__").await {
+        first_err.get_or_insert(e);
+    }
+    match first_err {
+        Some(e) => Err(e),
+        None => Ok(()),
     }
 }
 

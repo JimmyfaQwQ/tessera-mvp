@@ -214,6 +214,82 @@ pub enum Token {
     Error,
 }
 
+impl Token {
+    /// A human-friendly description of this token for use in diagnostics,
+    /// e.g. ``` `;` ``` or `keyword `function``` or `identifier`.
+    pub fn describe(&self) -> String {
+        use Token::*;
+        let lit = |s: &str| format!("`{s}`");
+        match self {
+            KwDollarTemplate => lit("$template"),
+            KwAtTemplate => lit("@template"),
+            DollarBraceOpen => lit("${"),
+            KwExclusive => lit("#exclusive"),
+            ColonEq => lit(":="),
+            KwFunction => "keyword `function`".into(),
+            KwAsync => "keyword `async`".into(),
+            KwHandler => "keyword `handler`".into(),
+            KwExposeMutable => "keyword `expose_mutable`".into(),
+            KwExpose => "keyword `expose`".into(),
+            KwDefine => "keyword `define`".into(),
+            KwLet => "keyword `let`".into(),
+            KwIf => "keyword `if`".into(),
+            KwElse => "keyword `else`".into(),
+            KwWhile => "keyword `while`".into(),
+            KwFor => "keyword `for`".into(),
+            KwBreak => "keyword `break`".into(),
+            KwContinue => "keyword `continue`".into(),
+            KwReturn => "keyword `return`".into(),
+            KwAwait => "keyword `await`".into(),
+            KwTry => "keyword `try`".into(),
+            KwPanic => "keyword `panic`".into(),
+            KwAssert => "keyword `assert`".into(),
+            KwBool => "type `bool`".into(),
+            KwInt => "type `int`".into(),
+            KwDouble => "type `double`".into(),
+            KwChar => "type `char`".into(),
+            KwString => "type `String`".into(),
+            KwVoid => "type `void`".into(),
+            KwNever => "type `never`".into(),
+            LitTrue => lit("true"),
+            LitFalse => lit("false"),
+            LitDouble(d) => format!("double literal `{d}`"),
+            LitInt(n) => format!("int literal `{n}`"),
+            LitString(s) => format!("string literal `\"{s}\"`"),
+            LitChar(c) => format!("char literal `'{c}'`"),
+            Ident(name) => format!("identifier `{name}`"),
+            Dollar => lit("$"),
+            At => lit("@"),
+            EqEq => lit("=="),
+            BangEq => lit("!="),
+            LtEq => lit("<="),
+            GtEq => lit(">="),
+            AmpAmp => lit("&&"),
+            PipePipe => lit("||"),
+            Eq => lit("="),
+            Plus => lit("+"),
+            Minus => lit("-"),
+            Star => lit("*"),
+            Slash => lit("/"),
+            Percent => lit("%"),
+            Bang => lit("!"),
+            Lt => lit("<"),
+            Gt => lit(">"),
+            BraceOpen => lit("{"),
+            BraceClose => lit("}"),
+            ParenOpen => lit("("),
+            ParenClose => lit(")"),
+            BracketOpen => lit("["),
+            BracketClose => lit("]"),
+            Semicolon => lit(";"),
+            Comma => lit(","),
+            Colon => lit(":"),
+            Dot => lit("."),
+            Error => "invalid token".into(),
+        }
+    }
+}
+
 fn lex_int(lex: &mut logos::Lexer<Token>) -> Option<i64> {
     lex.slice().parse().ok()
 }
