@@ -30,3 +30,37 @@ impl Diagnostic {
         self
     }
 }
+
+impl std::fmt::Display for Diagnostic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for Diagnostic {}
+
+// Manual `miette::Diagnostic` impl because severity is chosen at runtime
+// (per-lint), which the derive macro cannot express.
+impl miette::Diagnostic for Diagnostic {
+    fn code(&self) -> Option<Box<dyn std::fmt::Display + '_>> {
+        Some(Box::new(self.rule_id))
+    }
+
+    fn severity(&self) -> Option<miette::Severity> {
+        Some(match self.severity {
+            Severity::Error => miette::Severity::Error,
+            Severity::Warn => miette::Severity::Warning,
+            Severity::Info => miette::Severity::Advice,
+        })
+    }
+
+    fn help(&self) -> Option<Box<dyn std::fmt::Display + '_>> {
+        self.help.as_ref().map(|h| Box::new(h.clone()) as Box<dyn std::fmt::Display>)
+    }
+
+    fn labels(&self) -> Option<Box<dyn Iterator<Item = miette::LabeledSpan> + '_>> {
+        Some(Box::new(std::iter::once(
+            miette::LabeledSpan::new_primary_with_span(None, self.primary_span),
+        )))
+    }
+}

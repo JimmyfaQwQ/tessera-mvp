@@ -10,3 +10,4 @@ async-channel = { workspace = true }
 indexmap      = { workspace = true }
 parking_lot   = { workspace = true }
 thiserror     = { workspace = true }
+miette        = { workspace = true }

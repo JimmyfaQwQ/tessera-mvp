@@ -6,3 +6,5 @@ edition = "2021"
 [dependencies]
 logos = { workspace = true }
 tessera-ast = { path = "../tessera-ast" }
+miette = { workspace = true }
+thiserror = { workspace = true }

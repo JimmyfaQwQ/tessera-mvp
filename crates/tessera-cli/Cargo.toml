@@ -15,3 +15,4 @@ tessera-types  = { path = "../tessera-types" }
 tessera-lint   = { path = "../tessera-lint" }
 tessera-interp = { path = "../tessera-interp" }
 tokio          = { workspace = true }
+miette         = { workspace = true }

@@ -111,8 +111,11 @@ impl TypeEnv {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, thiserror::Error, miette::Diagnostic)]
+#[error("{message}")]
+#[diagnostic(code(tessera::typecheck))]
 pub struct TypeDiagnostic {
     pub message: String,
+    #[label("type error occurs here")]
     pub span: tessera_ast::Span,
 }

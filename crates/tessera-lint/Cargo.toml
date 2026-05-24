@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 tessera-ast   = { path = "../tessera-ast" }
 tessera-types = { path = "../tessera-types" }
+miette        = { workspace = true }

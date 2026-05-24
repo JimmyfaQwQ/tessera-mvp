@@ -9,11 +9,14 @@ pub struct Parser {
     errors: Vec<ParseError>,
     /// True when we're parsing a type annotation (disambiguates `<`).
     in_type_ctx: bool,
+    /// Stack of currently-open delimiters with the span of their opener, used to
+    /// blame the unclosed opener when a matching close token is missing.
+    open_delims: Vec<(Token, Span)>,
 }
 
 impl Parser {
     pub fn new(tokens: TokenStream) -> Self {
-        Self { tokens, pos: 0, errors: Vec::new(), in_type_ctx: false }
+        Self { tokens, pos: 0, errors: Vec::new(), in_type_ctx: false, open_delims: Vec::new() }
     }
 
     pub fn into_errors(self) -> Vec<ParseError> {
@@ -41,22 +44,75 @@ impl Parser {
     }
 
     fn advance(&mut self) -> &Spanned<Token> {
+        // Track open/close delimiters so we can point at an unclosed opener.
+        let consumed = self.tokens.get(self.pos).map(|s| (s.node.clone(), s.span));
+        if let Some((node, span)) = consumed {
+            match node {
+                Token::BraceOpen | Token::ParenOpen | Token::BracketOpen | Token::DollarBraceOpen => {
+                    self.open_delims.push((node, span));
+                }
+                Token::BraceClose | Token::ParenClose | Token::BracketClose => {
+                    self.open_delims.pop();
+                }
+                _ => {}
+            }
+        }
         let tok = &self.tokens[self.pos];
         if self.pos < self.tokens.len() { self.pos += 1; }
         tok
     }
 
+    fn describe_got(&self) -> String {
+        match self.peek() {
+            Some(t) => t.describe(),
+            None => "end of file".to_string(),
+        }
+    }
+
     fn expect(&mut self, expected: &Token) -> Span {
         if self.peek() == Some(expected) {
-            self.advance().span
-        } else {
-            let span = self.current_span();
-            self.errors.push(ParseError::new(
-                format!("expected {:?}, got {:?}", expected, self.peek()),
-                span,
-            ));
-            span
+            return self.advance().span;
         }
+
+        let span = self.current_span();
+        let at_eof = self.peek().is_none();
+
+        // ── Root-cause analysis for the most common syntax mistakes ──────────
+        let err = match expected {
+            // A missing `;` is almost always meant to terminate the *previous*
+            // statement, so point the caret right after it.
+            Token::Semicolon => {
+                let p = self.prev_span();
+                let caret = Span::new(p.end, p.end);
+                ParseError::new("missing `;` after statement", caret)
+                    .primary_label("insert `;` here")
+                    .with_help("statements in Tessera must be terminated with `;`")
+            }
+            // A missing closing delimiter: blame the unclosed opener.
+            Token::BraceClose | Token::ParenClose | Token::BracketClose => {
+                let mut e = ParseError::new(
+                    format!("expected {}, but found {}", expected.describe(), self.describe_got()),
+                    span,
+                )
+                .primary_label(format!("expected {} here", expected.describe()));
+                if at_eof {
+                    if let Some((open_tok, open_span)) = self.open_delims.last().cloned() {
+                        e = e
+                            .with_secondary(format!("unclosed {} opened here", open_tok.describe()), open_span)
+                            .with_help(format!("add a matching {} to close this block", expected.describe()));
+                    }
+                }
+                e
+            }
+            _ => ParseError::new(
+                format!("expected {}, but found {}", expected.describe(), self.describe_got()),
+                span,
+            )
+            .primary_label(format!("expected {} here", expected.describe())),
+        };
+
+        self.errors.push(err);
+        span
     }
 
     fn eat(&mut self, tok: &Token) -> bool {
@@ -67,11 +123,14 @@ impl Parser {
         let span = self.current_span();
         match self.peek().cloned() {
             Some(Token::Ident(name)) => { self.advance(); Ident::new(name, span) }
-            other => {
-                self.errors.push(ParseError::new(
-                    format!("expected identifier, got {:?}", other),
-                    span,
-                ));
+            _ => {
+                self.errors.push(
+                    ParseError::new(
+                        format!("expected an identifier, but found {}", self.describe_got()),
+                        span,
+                    )
+                    .primary_label("expected a name here"),
+                );
                 Ident::new("<error>", span)
             }
         }
@@ -221,12 +280,17 @@ impl Parser {
                             _ => ThreadTemplateMember::MemberFunc(func),
                         }
                     }
-                    other => {
+                    _ => {
                         let span = self.current_span();
-                        self.errors.push(ParseError::new(
-                            format!("expected 'handler' or 'function' after 'async', got {:?}", other),
-                            span,
-                        ));
+                        let got = self.describe_got();
+                        self.errors.push(
+                            ParseError::new(
+                                format!("expected `handler` or `function` after `async`, but found {got}"),
+                                span,
+                            )
+                            .primary_label("expected `handler` or `function` here")
+                            .with_help("async members must be either `async handler` or `async function`"),
+                        );
                         // skip one token for recovery
                         if !self.at_eof() { self.advance(); }
                         ThreadTemplateMember::MemberFunc(FuncDef {
@@ -250,12 +314,17 @@ impl Parser {
                     _              => ThreadTemplateMember::MemberFunc(func),
                 }
             }
-            other => {
+            _ => {
                 let span = self.current_span();
-                self.errors.push(ParseError::new(
-                    format!("unexpected token in thread template body: {:?}", other),
-                    span,
-                ));
+                let got = self.describe_got();
+                self.errors.push(
+                    ParseError::new(
+                        format!("unexpected {got} in thread template body"),
+                        span,
+                    )
+                    .primary_label("not valid here")
+                    .with_help("a `$template` body may contain `expose`, `define`, handlers, and functions"),
+                );
                 if !self.at_eof() { self.advance(); }
                 ThreadTemplateMember::MemberFunc(FuncDef {
                     kind: FuncKind::Sync,
@@ -506,9 +575,13 @@ impl Parser {
                 let args = self.parse_call_args();
                 (ThreadTemplateRef::Named(name), args)
             }
-            other => {
+            _ => {
                 let span = self.current_span();
-                self.errors.push(ParseError::new(format!("expected thread spawn, got {:?}", other), span));
+                let got = self.describe_got();
+                self.errors.push(
+                    ParseError::new(format!("expected a thread spawn, but found {got}"), span)
+                        .primary_label("expected `$template`, `$Name(...)` or `${ ... }` here"),
+                );
                 (ThreadTemplateRef::Shorthand, vec![])
             }
         };
@@ -541,9 +614,13 @@ impl Parser {
                 let args = self.parse_call_args();
                 (ScopeTemplateRef::Named(name), args)
             }
-            other => {
+            _ => {
                 let span = self.current_span();
-                self.errors.push(ParseError::new(format!("expected scope block, got {:?}", other), span));
+                let got = self.describe_got();
+                self.errors.push(
+                    ParseError::new(format!("expected a scope block, but found {got}"), span)
+                        .primary_label("expected `@template` or `@Name(...)` here"),
+                );
                 (ScopeTemplateRef::Named(Ident::new("<error>", span)), vec![])
             }
         };
@@ -733,8 +810,12 @@ impl Parser {
                 self.advance();
                 self.parse_ident_or_call(name, span)
             }
-            other => {
-                self.errors.push(ParseError::new(format!("unexpected token in expression: {:?}", other), span));
+            _ => {
+                let got = self.describe_got();
+                self.errors.push(
+                    ParseError::new(format!("unexpected {got} while parsing an expression"), span)
+                        .primary_label("expected a value, identifier, or `(`"),
+                );
                 if !self.at_eof() { self.advance(); }
                 Expr::Ident(Ident::new("<error>", span))
             }
@@ -890,7 +971,11 @@ fn expr_to_assign_target(expr: Expr, errors: &mut Vec<ParseError>) -> AssignTarg
         Expr::Index(i) => AssignTarget::Index(Box::new(i.object), Box::new(i.index)),
         other => {
             let span = other.span();
-            errors.push(ParseError::new("invalid assignment target", span));
+            errors.push(
+                ParseError::new("invalid assignment target", span)
+                    .primary_label("cannot assign to this expression")
+                    .with_help("the left-hand side of `=` must be a variable, field, or index"),
+            );
             AssignTarget::Ident(Ident::new("<error>", span))
         }
     }
