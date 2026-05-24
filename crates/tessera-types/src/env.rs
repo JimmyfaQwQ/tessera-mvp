@@ -116,6 +116,6 @@ impl TypeEnv {
 #[diagnostic(code(tessera::typecheck))]
 pub struct TypeDiagnostic {
     pub message: String,
-    #[label("type error occurs here")]
+    #[label("type error occurred here")]
     pub span: tessera_ast::Span,
 }

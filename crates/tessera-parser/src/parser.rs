@@ -35,7 +35,15 @@ impl Parser {
     }
 
     fn current_span(&self) -> Span {
-        self.tokens.get(self.pos).map(|s| s.span).unwrap_or(Span::dummy())
+        match self.tokens.get(self.pos) {
+            Some(s) => s.span,
+            // At EOF point at the end of the last token (a zero-width span) so
+            // carets land at end-of-input rather than the start of the file.
+            None => {
+                let end = self.tokens.last().map(|s| s.span.end).unwrap_or(0);
+                Span::new(end, end)
+            }
+        }
     }
 
     fn prev_span(&self) -> Span {
@@ -51,7 +59,25 @@ impl Parser {
                 Token::BraceOpen | Token::ParenOpen | Token::BracketOpen | Token::DollarBraceOpen => {
                     self.open_delims.push((node, span));
                 }
-                Token::BraceClose | Token::ParenClose | Token::BracketClose => {
+                // Only pop when the closer matches the most recent opener, so a
+                // stray/mismatched closer cannot desynchronize the stack and
+                // blame the wrong opener. (`${ ... }` is closed by `}`.)
+                Token::BraceClose
+                    if matches!(
+                        self.open_delims.last().map(|(t, _)| t),
+                        Some(Token::BraceOpen) | Some(Token::DollarBraceOpen)
+                    ) =>
+                {
+                    self.open_delims.pop();
+                }
+                Token::ParenClose
+                    if matches!(self.open_delims.last().map(|(t, _)| t), Some(Token::ParenOpen)) =>
+                {
+                    self.open_delims.pop();
+                }
+                Token::BracketClose
+                    if matches!(self.open_delims.last().map(|(t, _)| t), Some(Token::BracketOpen)) =>
+                {
                     self.open_delims.pop();
                 }
                 _ => {}
