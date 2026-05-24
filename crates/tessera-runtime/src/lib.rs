@@ -1,3 +1,5 @@
+#![allow(clippy::arc_with_non_send_sync)]
+
 pub mod error;
 pub mod value;
 pub mod thread_state;

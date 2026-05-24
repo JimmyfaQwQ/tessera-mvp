@@ -59,6 +59,10 @@ impl std::fmt::Debug for TesseraSignal {
     }
 }
 
+impl Default for TesseraSignal {
+    fn default() -> Self { Self::new() }
+}
+
 impl TesseraSignal {
     pub fn new() -> Self {
         Self {
@@ -156,6 +160,10 @@ impl std::fmt::Debug for TesseraContract {
             write!(f, "contract({})", if s.pending { "pending" } else { "idle" })
         }
     }
+}
+
+impl Default for TesseraContract {
+    fn default() -> Self { Self::new() }
 }
 
 impl TesseraContract {

@@ -703,8 +703,7 @@ impl Parser {
     fn parse_pratt(&mut self, min_bp: u8) -> Expr {
         let mut lhs = self.parse_unary();
 
-        loop {
-            let Some(op) = self.peek_binop() else { break };
+        while let Some(op) = self.peek_binop() {
             let (lbp, rbp) = infix_binding_power(&op);
             if lbp < min_bp { break; }
             self.advance();

@@ -1,7 +1,9 @@
+#![allow(dead_code, unused_assignments)]
 use miette::Diagnostic;
 use thiserror::Error;
 use tessera_ast::Span;
 
+#[allow(unused)]
 #[derive(Debug, Clone, Error, Diagnostic)]
 pub enum RuntimeError {
     #[error("panic: {message}")]

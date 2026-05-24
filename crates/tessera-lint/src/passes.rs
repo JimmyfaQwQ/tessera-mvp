@@ -263,6 +263,7 @@ impl<'e> Visitor for TerminateVisitor<'e> {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+#[allow(clippy::only_used_in_recursion)]
 fn resolve_type_expr(env: &TypeEnv, te: &TypeExpr) -> Type {
     match te {
         TypeExpr::Void => Type::Void,
@@ -459,18 +460,16 @@ impl Visitor for PermitReleaseVisitor {
             Expr::Call(c) => {
                 if let Expr::Ident(i) = &c.callee {
                     if i.name == "permit" {
-                        if let Some(arg) = c.args.first() {
-                            if let Expr::Lit(lit) = arg {
-                                if let LitKind::Int(n) = lit.kind {
-                                    if n < 0 {
-                                        self.diags.push(
-                                            Diagnostic::error(
-                                                "L-PERMIT-RELEASE-NON-POSITIVE",
-                                                format!("permit(initial): initial must be non-negative, got {n}"),
-                                                c.span,
-                                            )
-                                        );
-                                    }
+                        if let Some(Expr::Lit(lit)) = c.args.first() {
+                            if let LitKind::Int(n) = lit.kind {
+                                if n < 0 {
+                                    self.diags.push(
+                                        Diagnostic::error(
+                                            "L-PERMIT-RELEASE-NON-POSITIVE",
+                                            format!("permit(initial): initial must be non-negative, got {n}"),
+                                            c.span,
+                                        )
+                                    );
                                 }
                             }
                         }
@@ -480,18 +479,16 @@ impl Visitor for PermitReleaseVisitor {
             // p.release(n) with n <= 0
             Expr::MethodCall(m) => {
                 if m.method.name == "release" {
-                    if let Some(arg) = m.args.first() {
-                        if let Expr::Lit(lit) = arg {
-                            if let LitKind::Int(n) = lit.kind {
-                                if n <= 0 {
-                                    self.diags.push(
-                                        Diagnostic::error(
-                                            "L-PERMIT-RELEASE-NON-POSITIVE",
-                                            format!("permit.release(n): n must be positive, got {n}"),
-                                            m.span,
-                                        )
-                                    );
-                                }
+                    if let Some(Expr::Lit(lit)) = m.args.first() {
+                        if let LitKind::Int(n) = lit.kind {
+                            if n <= 0 {
+                                self.diags.push(
+                                    Diagnostic::error(
+                                        "L-PERMIT-RELEASE-NON-POSITIVE",
+                                        format!("permit.release(n): n must be positive, got {n}"),
+                                        m.span,
+                                    )
+                                );
                             }
                         }
                     }

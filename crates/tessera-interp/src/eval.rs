@@ -113,6 +113,10 @@ pub struct Frame {
 
 // ── Interpreter state (shared via Rc between main body task + handler tasks) ──
 
+/// Shared mutable field storage for a template instance; all mini-threads from
+/// the same template hold an `Rc` to this map.
+type TemplateSelf = RefCell<Option<Rc<RefCell<HashMap<String, Value>>>>>;
+
 pub struct InterpState {
     pub env: RefCell<Env>,
     pub func_table: RefCell<HashMap<String, Arc<FuncDef>>>,
@@ -123,7 +127,7 @@ pub struct InterpState {
     pub expose_mutable_field_names: RefCell<HashSet<String>>,
     /// Shared field storage for the current thread template instance.
     /// All mini-threads spawned from this template share the same Rc.
-    pub template_self: RefCell<Option<Rc<RefCell<HashMap<String, Value>>>>>,
+    pub template_self: TemplateSelf,
     /// Live call stack for the current task, pushed/popped around function and
     /// handler invocations. Each task (thread/mini-thread) has its own.
     pub call_stack: RefCell<Vec<Frame>>,
@@ -188,6 +192,10 @@ impl InterpState {
 
 #[derive(Clone)]
 pub struct Interpreter(pub Rc<InterpState>);
+
+impl Default for Interpreter {
+    fn default() -> Self { Self::new() }
+}
 
 impl Interpreter {
     pub fn new() -> Self {
@@ -411,12 +419,9 @@ impl Interpreter {
     pub async fn exec_block(&self, b: &Block) -> Result<Option<Value>, RuntimeError> {
         self.0.env.borrow_mut().push_scope();
         for s in &b.stmts {
-            match self.exec_stmt(s).await? {
-                Some(v) => {
-                    self.0.env.borrow_mut().pop_scope();
-                    return Ok(Some(v));
-                }
-                None => {}
+            if let Some(v) = self.exec_stmt(s).await? {
+                self.0.env.borrow_mut().pop_scope();
+                return Ok(Some(v));
             }
         }
         self.0.env.borrow_mut().pop_scope();
@@ -506,7 +511,7 @@ impl Interpreter {
             ThreadTemplateRef::Shorthand => (None, None),
         };
 
-        let is_terminatable = decl.as_ref().map_or(false, |d| {
+        let is_terminatable = decl.as_ref().is_some_and(|d| {
             d.members.iter().any(|m| matches!(m, tessera_ast::ThreadTemplateMember::OnTerminate(_)))
         });
 

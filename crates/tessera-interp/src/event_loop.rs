@@ -125,7 +125,7 @@ pub async fn run_thread_task(
     // Clone interp so the body future and handler dispatch use independent
     // Rust borrows while sharing the same Rc<InterpState>.
     let body_interp = interp.clone();
-    let mut body_fut = body_interp.exec_block(&*body);
+    let mut body_fut = body_interp.exec_block(&body);
 
     loop {
         let exclusive = state.exclusive_mode();
