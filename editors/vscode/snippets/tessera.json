@@ -278,6 +278,20 @@
     ],
     "description": "Await a permit (async context)"
   },
+  "try": {
+    "prefix": "try",
+    "body": [
+      "try ${1:expr}"
+    ],
+    "description": "try operator: propagate error from Result<T, E> (returns from enclosing function on Err)"
+  },
+  "try-await": {
+    "prefix": "try-await",
+    "body": [
+      "let ${1:val}: ${2:T} = try await ${3:expr};"
+    ],
+    "description": "Await an async Result and propagate the error with try"
+  },
   "parse-int": {
     "prefix": "parse-int",
     "body": [
