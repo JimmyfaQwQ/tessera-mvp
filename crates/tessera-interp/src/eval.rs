@@ -50,7 +50,7 @@ use tessera_runtime::{
     Value, RuntimeError, QueuePushError, HandlerDispatchError,
     TesseraLocked, TesseraQueue, TesseraSignal, TesseraContract, TesseraPermit,
     FutureOutcome, TesseraFuture, HandlerResolveResult, ThreadState,
-    HandlerRequest, BreakablePrimitive,
+    HandlerRequest, BreakablePrimitive, BrokenReason,
 };
 use tessera_runtime::value::ValueKey;
 use crate::env::Env;
@@ -98,6 +98,27 @@ fn runtime_error_to_error_obj(e: &RuntimeError) -> Value {
             (kind.clone(), message.clone()),
     };
     Value::ErrorObj { kind, message }
+}
+
+/// Collect Arc<dyn BreakablePrimitive> for all define fields in self_map that hold
+/// a Signal, Contract, or Permit. Used for scope binding in exec_scope_block.
+fn collect_define_field_prims(
+    self_map: &Rc<RefCell<HashMap<String, Value>>>,
+    define_names: &[String],
+) -> Vec<Arc<dyn BreakablePrimitive>> {
+    let map = self_map.borrow();
+    let mut prims: Vec<Arc<dyn BreakablePrimitive>> = Vec::new();
+    for name in define_names {
+        if let Some(val) = map.get(name) {
+            match val {
+                Value::Signal(s)   => prims.push(Arc::clone(s) as Arc<dyn BreakablePrimitive>),
+                Value::Contract(c) => prims.push(Arc::clone(c) as Arc<dyn BreakablePrimitive>),
+                Value::Permit(p)   => prims.push(Arc::clone(p) as Arc<dyn BreakablePrimitive>),
+                _ => {}
+            }
+        }
+    }
+    prims
 }
 
 
@@ -413,7 +434,16 @@ impl Interpreter {
 
         // Bind args to params in a new scope
         self.0.env.borrow_mut().push_scope();
+
+        // Scope-bound primitives collected after __on_enter__ runs.
+        let mut scope_prims: Vec<Arc<dyn BreakablePrimitive>> = Vec::new();
+
         if let Some(decl) = &decl {
+            // Collect define field names for scope binding (before anything else).
+            let define_field_names: Vec<String> = decl.members.iter()
+                .filter_map(|m| if let ScopeTemplateMember::Define(e) = m { Some(e.name.name.clone()) } else { None })
+                .collect();
+
             // Build self_map for scope template fields so `self.xxx` works.
             let self_map: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<String, Value>>> =
                 std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashMap::new()));
@@ -433,20 +463,36 @@ impl Interpreter {
                 }
             }
             // Bind `self` in env so __on_enter__ / __on_exit__ / body can access fields via self.xxx.
-            self.0.env.borrow_mut().define("self".to_string(), Value::Object(self_map));
+            self.0.env.borrow_mut().define("self".to_string(), Value::Object(self_map.clone()));
             // Run __on_enter__
             if let Some(on_enter) = find_scope_hook(decl, "__on_enter__") {
-                self.exec_block(&on_enter.body).await?;
+                if let Err(e) = self.exec_block(&on_enter.body).await {
+                    // __on_enter__ crashed — break whatever scope prims were created, then propagate.
+                    let prims = collect_define_field_prims(&self_map, &define_field_names);
+                    for p in &prims { p.break_with(BrokenReason::ScopeCrashed); }
+                    self.0.env.borrow_mut().pop_scope();
+                    return Err(e);
+                }
             }
+
+            // Collect scope-bound primitives AFTER __on_enter__ succeeds.
+            scope_prims = collect_define_field_prims(&self_map, &define_field_names);
         }
 
         // Run user body (save error for after on_exit)
         let body_result = self.exec_block(&sb.body).await;
+        let body_crashed = body_result.is_err();
 
         // Run __on_exit__ unconditionally
         if let Some(decl) = &decl {
             if let Some(on_exit) = find_scope_hook(decl, "__on_exit__") {
                 let _ = self.exec_block(&on_exit.body).await;
+            }
+            // Break scope-bound primitives AFTER __on_exit__ returns.
+            // ScopeGone = normal exit; ScopeCrashed = enclosing thread was crashing.
+            let reason = if body_crashed { BrokenReason::ScopeCrashed } else { BrokenReason::ScopeGone };
+            for p in &scope_prims {
+                p.break_with(reason.clone());
             }
         }
 

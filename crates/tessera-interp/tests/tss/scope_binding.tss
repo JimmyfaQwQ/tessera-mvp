@@ -1,0 +1,24 @@
+// Test: @template define fields are scope-bound — they go Broken (ScopeGone)
+// after the scope exits normally, and Broken (ScopeCrashed) if the scope body panics.
+
+@template PauseCtx {
+    define resumed: signal;
+    function __on_enter__(): void {
+        self.resumed = signal();
+    }
+}
+
+// ── Test 1: ScopeGone on normal exit ─────────────────────────────────────────
+
+let captured: signal = signal();
+
+@PauseCtx {
+    captured = self.resumed;
+    // Body ends normally — scope exits → ScopeGone
+}
+
+// After scope exit the signal should be Broken(ScopeGone).
+assert(captured.isErr());
+let r: Result<void, error> = try await captured;
+assert(r.isErr());
+assert(r.unwrapErr().kind == "ScopeGone");

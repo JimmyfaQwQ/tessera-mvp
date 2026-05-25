@@ -650,8 +650,8 @@ impl<'e> TypeChecker<'e> {
                     }
                 }
             }
-            "isOk" if matches!(recv_ty, Type::HandlerFuture(_)) => Type::Bool,
-            "isErr" if matches!(recv_ty, Type::HandlerFuture(_)) => Type::Bool,
+            "isOk" if matches!(recv_ty, Type::HandlerFuture(_) | Type::Signal | Type::Contract | Type::Permit) => Type::Bool,
+            "isErr" if matches!(recv_ty, Type::HandlerFuture(_) | Type::Signal | Type::Contract | Type::Permit) => Type::Bool,
             // signal methods
             "raise" | "reset" => Type::Void,
             "isRaised" => Type::Bool,

@@ -10,6 +10,10 @@ pub enum BrokenReason {
     OwnerGone,
     /// Binding owner crashed (Crashed).
     OwnerCrashed,
+    /// Scope binding: @template block exited normally (__on_exit__ returned).
+    ScopeGone,
+    /// Scope binding: enclosing thread crashed while the @template scope was active.
+    ScopeCrashed,
 }
 
 impl BrokenReason {
@@ -17,6 +21,8 @@ impl BrokenReason {
         match self {
             BrokenReason::OwnerGone    => "OwnerGone",
             BrokenReason::OwnerCrashed => "OwnerCrashed",
+            BrokenReason::ScopeGone    => "ScopeGone",
+            BrokenReason::ScopeCrashed => "ScopeCrashed",
         }
     }
 }

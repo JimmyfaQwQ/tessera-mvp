@@ -54,6 +54,14 @@ async fn test_scope_hooks() {
     assert_runs_ok!(&src);
 }
 
+// ── Scope binding: define fields go Broken on scope exit ─────────────────────
+
+#[tokio::test]
+async fn test_scope_binding() {
+    let src = tss("scope_binding");
+    assert_runs_ok!(&src);
+}
+
 // ── Thread lifecycle (spawn, body runs, expose read) ─────────────────────────
 
 #[tokio::test]
