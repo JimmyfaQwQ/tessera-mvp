@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_assignments)]
 use indexmap::IndexMap;
 use crate::ty::{Type, TemplateInfo};
 
@@ -11,6 +12,10 @@ pub struct FuncSig {
 #[derive(Debug, Clone)]
 pub struct Scope {
     pub bindings: IndexMap<String, Type>,
+}
+
+impl Default for Scope {
+    fn default() -> Self { Self::new() }
 }
 
 impl Scope {
@@ -51,6 +56,10 @@ pub struct TypeEnv {
     pub in_exclusive: bool,
     pub diagnostics: Vec<TypeDiagnostic>,
     next_template_id: usize,
+}
+
+impl Default for TypeEnv {
+    fn default() -> Self { Self::new() }
 }
 
 impl TypeEnv {
@@ -111,8 +120,12 @@ impl TypeEnv {
     }
 }
 
-#[derive(Debug, Clone)]
+#[allow(unused)]
+#[derive(Debug, Clone, thiserror::Error, miette::Diagnostic)]
+#[error("{message}")]
+#[diagnostic(code(tessera::typecheck))]
 pub struct TypeDiagnostic {
     pub message: String,
+    #[label("type error occurred here")]
     pub span: tessera_ast::Span,
 }

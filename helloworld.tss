@@ -36,9 +36,6 @@ $template reader() {
         self.line = Queue<String>();
     }
 
-    function __on_exit__(): void {
-    }
-
     async function run(): void {
         let buf: String = "";
         while (true) {

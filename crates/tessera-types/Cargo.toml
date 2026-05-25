@@ -7,3 +7,4 @@ edition = "2021"
 tessera-ast   = { path = "../tessera-ast" }
 indexmap      = { workspace = true }
 thiserror     = { workspace = true }
+miette        = { workspace = true }

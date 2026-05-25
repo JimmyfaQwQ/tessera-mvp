@@ -122,7 +122,21 @@ fn collect_define_field_prims(
 }
 
 
+// ── Call-stack frames (for runtime tracebacks) ───────────────────────────────
+
+/// A single entry in a runtime traceback: the name of the function/handler and
+/// the source span of its definition (or the call site).
+#[derive(Debug, Clone)]
+pub struct Frame {
+    pub name: String,
+    pub span: Span,
+}
+
 // ── Interpreter state (shared via Rc between main body task + handler tasks) ──
+
+/// Shared mutable field storage for a template instance; all mini-threads from
+/// the same template hold an `Rc` to this map.
+type TemplateSelf = RefCell<Option<Rc<RefCell<HashMap<String, Value>>>>>;
 
 pub struct InterpState {
     pub env: RefCell<Env>,
@@ -134,7 +148,13 @@ pub struct InterpState {
     pub expose_mutable_field_names: RefCell<HashSet<String>>,
     /// Shared field storage for the current thread template instance.
     /// All mini-threads spawned from this template share the same Rc.
-    pub template_self: RefCell<Option<Rc<RefCell<HashMap<String, Value>>>>>,
+    pub template_self: TemplateSelf,
+    /// Live call stack for the current task, pushed/popped around function and
+    /// handler invocations. Each task (thread/mini-thread) has its own.
+    pub call_stack: RefCell<Vec<Frame>>,
+    /// Snapshot of `call_stack` captured at the deepest point an error was
+    /// first observed, used to render a traceback. Set once per failure.
+    pub last_backtrace: RefCell<Option<Vec<Frame>>>,
 }
 
 impl InterpState {
@@ -148,6 +168,8 @@ impl InterpState {
             expose_field_names: RefCell::new(HashSet::new()),
             expose_mutable_field_names: RefCell::new(HashSet::new()),
             template_self: RefCell::new(None),
+            call_stack: RefCell::new(Vec::new()),
+            last_backtrace: RefCell::new(None),
         }
     }
 
@@ -162,6 +184,8 @@ impl InterpState {
             expose_field_names: RefCell::new(HashSet::new()),
             expose_mutable_field_names: RefCell::new(HashSet::new()),
             template_self: RefCell::new(None),
+            call_stack: RefCell::new(Vec::new()),
+            last_backtrace: RefCell::new(None),
         })
     }
 
@@ -179,6 +203,8 @@ impl InterpState {
             expose_mutable_field_names: RefCell::new(parent.expose_mutable_field_names.borrow().clone()),
             // Share the same Rc so mini-threads see template fields
             template_self: RefCell::new(parent.template_self.borrow().clone()),
+            call_stack: RefCell::new(Vec::new()),
+            last_backtrace: RefCell::new(None),
         })
     }
 }
@@ -187,6 +213,10 @@ impl InterpState {
 
 #[derive(Clone)]
 pub struct Interpreter(pub Rc<InterpState>);
+
+impl Default for Interpreter {
+    fn default() -> Self { Self::new() }
+}
 
 impl Interpreter {
     pub fn new() -> Self {
@@ -410,12 +440,9 @@ impl Interpreter {
     pub async fn exec_block(&self, b: &Block) -> Result<Option<Value>, RuntimeError> {
         self.0.env.borrow_mut().push_scope();
         for s in &b.stmts {
-            match self.exec_stmt(s).await? {
-                Some(v) => {
-                    self.0.env.borrow_mut().pop_scope();
-                    return Ok(Some(v));
-                }
-                None => {}
+            if let Some(v) = self.exec_stmt(s).await? {
+                self.0.env.borrow_mut().pop_scope();
+                return Ok(Some(v));
             }
         }
         self.0.env.borrow_mut().pop_scope();
@@ -455,7 +482,7 @@ impl Interpreter {
             for m in &decl.members {
                 if let ScopeTemplateMember::Define(e) = m {
                     let val = if let Some(init) = &e.initializer {
-                        self.eval_expr(init).await.unwrap_or_else(|_| crate::event_loop::default_value_for_type(&e.ty))
+                        self.eval_expr(init).await?
                     } else {
                         crate::event_loop::default_value_for_type(&e.ty)
                     };
@@ -483,10 +510,14 @@ impl Interpreter {
         let body_result = self.exec_block(&sb.body).await;
         let body_crashed = body_result.is_err();
 
-        // Run __on_exit__ unconditionally
+        // Run __on_exit__ unconditionally as cleanup, but no longer swallow its
+        // error: capture it so it can be surfaced if the body itself succeeded.
+        let mut exit_result: Result<(), RuntimeError> = Ok(());
         if let Some(decl) = &decl {
             if let Some(on_exit) = find_scope_hook(decl, "__on_exit__") {
-                let _ = self.exec_block(&on_exit.body).await;
+                if let Err(e) = self.exec_block(&on_exit.body).await {
+                    exit_result = Err(e);
+                }
             }
             // Break scope-bound primitives AFTER __on_exit__ returns.
             // ScopeGone = normal exit; ScopeCrashed = enclosing thread was crashing.
@@ -498,8 +529,12 @@ impl Interpreter {
 
         self.0.env.borrow_mut().pop_scope();
 
-        // Re-propagate body error (after on_exit ran)
-        body_result
+        // The body error happened first, so it takes precedence; otherwise
+        // propagate any error raised by __on_exit__.
+        match body_result {
+            Err(e) => Err(e),
+            Ok(v) => exit_result.map(|()| v),
+        }
     }
 
     // ── Thread spawning (Gap 3b) ───────────────────────────────────────────────
@@ -522,7 +557,7 @@ impl Interpreter {
             ThreadTemplateRef::Shorthand => (None, None),
         };
 
-        let is_terminatable = decl.as_ref().map_or(false, |d| {
+        let is_terminatable = decl.as_ref().is_some_and(|d| {
             d.members.iter().any(|m| matches!(m, tessera_ast::ThreadTemplateMember::OnTerminate(_)))
         });
 
@@ -806,7 +841,36 @@ impl Interpreter {
         Ok(Value::Void)
     }
 
+    // ── Call-stack bookkeeping for tracebacks ───────────────────────────────
+
+    fn push_frame(&self, name: impl Into<String>, span: Span) {
+        self.0.call_stack.borrow_mut().push(Frame { name: name.into(), span });
+    }
+
+    fn pop_frame(&self) {
+        self.0.call_stack.borrow_mut().pop();
+    }
+
+    /// Snapshot the current call stack into `last_backtrace` the first time an
+    /// error is seen, so the traceback reflects the deepest point of failure.
+    fn record_backtrace(&self) {
+        let mut bt = self.0.last_backtrace.borrow_mut();
+        if bt.is_none() {
+            *bt = Some(self.0.call_stack.borrow().clone());
+        }
+    }
+
     pub async fn call_func(&self, func: &FuncDef, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        self.push_frame(func.name.name.clone(), func.span);
+        let result = self.call_func_inner(func, args).await;
+        if result.is_err() {
+            self.record_backtrace();
+        }
+        self.pop_frame();
+        result
+    }
+
+    async fn call_func_inner(&self, func: &FuncDef, args: Vec<Value>) -> Result<Value, RuntimeError> {
         // Arity check
         let min_args = func.params.iter().filter(|p| p.default.is_none()).count();
         let max_args = func.params.len();
@@ -1231,7 +1295,7 @@ impl Interpreter {
                 let l = l.borrow();
                 let ui = n as usize;
                 if ui >= l.len() {
-                    return Err(RuntimeError::IndexOutOfBounds { index: n, length: l.len() as i32, location: Span::dummy() });
+                    return Err(RuntimeError::IndexOutOfBounds { index: n, length: l.len() as i32, location: i.span });
                 }
                 Ok(l[ui].clone())
             }
@@ -1381,12 +1445,17 @@ impl Interpreter {
     }
 
     pub async fn exec_handler_body(&self, handler: &HandlerDef, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        self.push_frame(format!("handler {}", handler.name.name), handler.span);
         self.0.env.borrow_mut().push_scope();
         for (param, val) in handler.params.iter().zip(args.into_iter()) {
             self.0.env.borrow_mut().define(param.name.name.clone(), val);
         }
         let result = self.exec_block(&handler.body).await;
         self.0.env.borrow_mut().pop_scope();
+        if result.is_err() {
+            self.record_backtrace();
+        }
+        self.pop_frame();
         match result? {
             Some(v) => Ok(v),
             None => Ok(Value::Void),

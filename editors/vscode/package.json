@@ -2,7 +2,7 @@
   "name": "tessera",
   "displayName": "Tessera",
   "description": "Syntax highlighting, language configuration, and snippets for the Tessera language (.tss files).",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "publisher": "tessera-lang",
   "engines": {
     "vscode": "^1.75.0"

@@ -117,7 +117,7 @@
     },
     "control-flow-keywords": {
       "name": "keyword.control.tessera",
-      "match": "\\b(if|else|while|for|break|continue|return|await)\\b"
+      "match": "\\b(if|else|while|for|break|continue|return|await|try)\\b"
     },
     "error-keywords": {
       "name": "keyword.other.error.tessera",

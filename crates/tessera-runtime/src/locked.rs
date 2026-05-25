@@ -63,6 +63,7 @@ impl TesseraLocked {
 
     /// Non-blocking attempt to acquire the explicit lock.
     /// Returns `Err(())` on reentrance, `Ok(true)` if acquired, `Ok(false)` if held by another.
+    #[allow(clippy::result_unit_err)]
     pub fn try_lock(&self, owner_id: usize) -> Result<bool, ()> {
         let mut g = self.inner.lock().unwrap();
         match g.owner {

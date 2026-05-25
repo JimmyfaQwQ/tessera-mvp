@@ -149,6 +149,47 @@ async fn test_unwrap_none() {
     assert!(matches!(err, RuntimeError::UnwrapNone { .. }));
 }
 
+// A failing thread-template field initializer must crash the thread (surfaced
+// here via `terminate().wait()`) rather than silently defaulting the field.
+#[tokio::test]
+async fn test_thread_field_initializer_failure_crashes() {
+    let err = assert_runs_err!(r#"
+        $template Bad() {
+            define x: int = 1 / 0;
+            async function __on_terminate__(): void {}
+        }
+        $Bad() { let y: int = 5; } := handle;
+        handle.terminate().wait();
+    "#);
+    assert!(matches!(err, RuntimeError::Panic { .. }));
+}
+
+// When a scope body succeeds but `__on_exit__` fails, the on_exit error is
+// surfaced (previously it was silently swallowed).
+#[tokio::test]
+async fn test_scope_on_exit_error_surfaced() {
+    let err = assert_runs_err!(r#"
+        @template C() {
+            function __on_exit__(): void { let z: int = 1 / 0; }
+        }
+        @C() { let y: int = 5; }
+    "#);
+    assert!(matches!(err, RuntimeError::DivisionByZero { .. }));
+}
+
+// When both the scope body and `__on_exit__` fail, the body error (which
+// happened first) takes precedence over the on_exit error.
+#[tokio::test]
+async fn test_scope_body_error_precedes_on_exit_error() {
+    let err = assert_runs_err!(r#"
+        @template C() {
+            function __on_exit__(): void { panic("exit failed"); }
+        }
+        @C() { let z: int = 7 / 0; }
+    "#);
+    assert!(matches!(err, RuntimeError::DivisionByZero { .. }));
+}
+
 #[tokio::test]
 async fn test_recursive_fib() {
     assert_runs_ok!("
