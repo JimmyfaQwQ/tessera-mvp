@@ -12,6 +12,7 @@ use tessera_runtime::{
     ThreadState, ThreadStatus, HandlerRequest, HandlerOutcome,
     FutureOutcome, TesseraFuture, HandlerDispatchError, TerminateBundle, Value,
 };
+
 use tokio::sync::{mpsc, oneshot};
 
 use crate::eval::{Interpreter, find_thread_hook, find_handler};
@@ -127,66 +128,120 @@ pub async fn run_thread_task(
     let body_interp = interp.clone();
     let mut body_fut = body_interp.exec_block(&body);
 
+    // R-EXCL-3: tracks whether terminate() arrived while exclusive_mode was
+    // active.  When true the state is already Terminating, the handler queue
+    // has been drained, but teardown hooks are deferred until the exclusive
+    // block exits.
+    let mut terminate_during_exclusive = false;
+
     loop {
         let exclusive = state.exclusive_mode();
+
+        // R-EXCL-3: exclusive block just ended and a deferred terminate is
+        // pending — run teardown now (body_fut is abandoned).
+        if terminate_during_exclusive && !exclusive {
+            match run_teardown_hooks(&interp, decl.as_deref(), true).await {
+                Ok(()) => {
+                    state.set_status(ThreadStatus::Terminated).await;
+                    if let Some(tx) = result_tx.take() {
+                        let _ = tx.send(FutureOutcome::Ok(Value::Void));
+                    }
+                }
+                Err(e) => {
+                    state.set_status(ThreadStatus::Crashed(e.to_string())).await;
+                    if let Some(tx) = result_tx.take() {
+                        let _ = tx.send(FutureOutcome::Failed(e.to_string()));
+                    }
+                }
+            }
+            break;
+        }
 
         tokio::select! {
             biased;
 
             // ── Terminate signal (highest priority) ──────────────────────────
             //
-            // Checked before body_fut so that a concurrent `terminate()` + body
-            // failure (e.g. an awaited signal went Broken because its owning
-            // thread was terminated) always takes the clean shutdown path instead
-            // of the crash path.
-            _ = &mut terminate_rx, if !exclusive => {
+            // No longer gated on `!exclusive`.  When terminate() arrives while
+            // the thread is inside an #exclusive block (R-EXCL-3):
+            //   • state transitions to Terminating immediately so that callers
+            //     of dispatch_handler() see TargetTerminating right away;
+            //   • the handler queue is drained;
+            //   • teardown hooks are deferred until the exclusive block exits
+            //     (handled by the `terminate_during_exclusive` check above).
+            // Outside exclusive mode the original behaviour is preserved.
+            _ = &mut terminate_rx, if !terminate_during_exclusive => {
                 state.set_status(ThreadStatus::Terminating).await;
                 drain_handlers(&mut handler_rx, HandlerDispatchError::TargetTerminating);
-                match run_teardown_hooks(&interp, decl.as_deref(), true).await {
-                    Ok(()) => {
-                        state.set_status(ThreadStatus::Terminated).await;
-                        if let Some(tx) = result_tx.take() {
-                            let _ = tx.send(FutureOutcome::Ok(Value::Void));
+                if exclusive {
+                    // Defer teardown until exclusive block exits.
+                    terminate_during_exclusive = true;
+                } else {
+                    match run_teardown_hooks(&interp, decl.as_deref(), true).await {
+                        Ok(()) => {
+                            state.set_status(ThreadStatus::Terminated).await;
+                            if let Some(tx) = result_tx.take() {
+                                let _ = tx.send(FutureOutcome::Ok(Value::Void));
+                            }
+                        }
+                        Err(e) => {
+                            state.set_status(ThreadStatus::Crashed(e.to_string())).await;
+                            if let Some(tx) = result_tx.take() {
+                                let _ = tx.send(FutureOutcome::Failed(e.to_string()));
+                            }
                         }
                     }
-                    Err(e) => {
-                        state.set_status(ThreadStatus::Crashed(e.to_string())).await;
-                        if let Some(tx) = result_tx.take() {
-                            let _ = tx.send(FutureOutcome::Failed(e.to_string()));
-                        }
-                    }
+                    // body_fut is dropped here, abandoning the main body
+                    break;
                 }
-                // body_fut is dropped here, abandoning the main body
-                break;
             }
 
             // ── Main body ────────────────────────────────────────────────────
             result = body_fut.as_mut() => {
                 match result {
                     Ok(_) => {
-                        let hook_result = run_hook(&interp, decl.as_deref(), "__on_exit__").await;
-                        match hook_result {
-                            Ok(()) => {
-                                state.set_status(ThreadStatus::Terminated).await;
-                                drain_handlers(&mut handler_rx, HandlerDispatchError::TargetTerminated);
-                                if let Some(tx) = result_tx.take() {
-                                    let _ = tx.send(FutureOutcome::Ok(Value::Void));
+                        if terminate_during_exclusive {
+                            // Body completed after the exclusive block ended with
+                            // a deferred terminate pending — run teardown, not the
+                            // normal __on_exit__ path.
+                            match run_teardown_hooks(&interp, decl.as_deref(), true).await {
+                                Ok(()) => {
+                                    state.set_status(ThreadStatus::Terminated).await;
+                                    if let Some(tx) = result_tx.take() {
+                                        let _ = tx.send(FutureOutcome::Ok(Value::Void));
+                                    }
+                                }
+                                Err(e) => {
+                                    state.set_status(ThreadStatus::Crashed(e.to_string())).await;
+                                    if let Some(tx) = result_tx.take() {
+                                        let _ = tx.send(FutureOutcome::Failed(e.to_string()));
+                                    }
                                 }
                             }
-                            Err(e) => {
-                                state.set_status(ThreadStatus::Crashed(e.to_string())).await;
-                                drain_handlers(&mut handler_rx, HandlerDispatchError::TargetCrashed);
-                                if let Some(tx) = result_tx.take() {
-                                    let _ = tx.send(FutureOutcome::Failed(e.to_string()));
+                        } else {
+                            let hook_result = run_hook(&interp, decl.as_deref(), "__on_exit__").await;
+                            match hook_result {
+                                Ok(()) => {
+                                    state.set_status(ThreadStatus::Terminated).await;
+                                    drain_handlers(&mut handler_rx, HandlerDispatchError::TargetTerminated);
+                                    if let Some(tx) = result_tx.take() {
+                                        let _ = tx.send(FutureOutcome::Ok(Value::Void));
+                                    }
+                                }
+                                Err(e) => {
+                                    state.set_status(ThreadStatus::Crashed(e.to_string())).await;
+                                    drain_handlers(&mut handler_rx, HandlerDispatchError::TargetCrashed);
+                                    if let Some(tx) = result_tx.take() {
+                                        let _ = tx.send(FutureOutcome::Failed(e.to_string()));
+                                    }
                                 }
                             }
                         }
                     }
                     Err(e) => {
-                        // Fallback: if body crashes while inside an #exclusive block
-                        // (terminate_rx guard was false), check whether terminate() was
-                        // requested concurrently and honour it rather than crashing.
-                        if terminate_rx.try_recv().is_ok() {
+                        // If terminate() was already handled (either normally or
+                        // deferred via exclusive), honour it over the crash.
+                        if terminate_during_exclusive || terminate_rx.try_recv().is_ok() {
                             state.set_status(ThreadStatus::Terminating).await;
                             drain_handlers(&mut handler_rx, HandlerDispatchError::TargetTerminating);
                             match run_teardown_hooks(&interp, decl.as_deref(), true).await {
@@ -216,9 +271,9 @@ pub async fn run_thread_task(
             }
 
             // ── Handler dispatch (inline, cooperative) ───────────────────────
-            req = handler_rx.recv(), if !exclusive => {
+            req = handler_rx.recv(), if !exclusive && !terminate_during_exclusive => {
                 if let Some(req) = req {
-                    dispatch_handler_inline(&interp, decl.as_deref(), req);
+                    dispatch_handler_inline(&interp, decl.as_deref(), req, state.clone());
                 }
             }
         }
@@ -236,10 +291,15 @@ pub async fn run_thread_task(
 /// the handler as a `spawn_local` task lets both the body and the handler be
 /// scheduled cooperatively within the same `LocalSet`, so each can make progress
 /// when the other yields.
+///
+/// R-EXCL-1: the spawned task defers execution until exclusive_mode is cleared
+/// so that handlers dispatched just before an #exclusive block cannot interleave
+/// with it at yield points inside the block.
 fn dispatch_handler_inline(
     interp: &Interpreter,
     decl: Option<&ThreadTemplateDecl>,
     req: HandlerRequest,
+    state: Arc<ThreadState>,
 ) {
     let handler = decl.and_then(|d| find_handler(d, &req.handler_name));
 
@@ -252,6 +312,16 @@ fn dispatch_handler_inline(
             let interp = interp.clone();
             let args = req.args;
             tokio::task::spawn_local(async move {
+                // R-EXCL-1: wait (without busy-polling) for any in-progress
+                // exclusive block on this thread to end before starting handler
+                // execution, so handlers dispatched just before the block cannot
+                // interleave with it at await points inside the block.
+                if state.exclusive_mode() {
+                    let mut rx = state.subscribe_exclusive();
+                    // wait_for checks the current value first, so this is
+                    // race-free: if exclusive already ended we return immediately.
+                    let _ = rx.wait_for(|&v| !v).await;
+                }
                 match interp.exec_handler_body(&h, args).await {
                     Ok(v)  => { let _ = exec_tx.send(FutureOutcome::Ok(v)); }
                     Err(e) => { let _ = exec_tx.send(FutureOutcome::Failed(e.to_string())); }

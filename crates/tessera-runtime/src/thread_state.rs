@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use tokio::sync::{Mutex, RwLock, mpsc, oneshot, watch};
 use indexmap::IndexMap;
 
@@ -56,7 +56,7 @@ pub struct ThreadState {
     /// Cached future returned to all `terminate()` callers.
     terminate_future: TesseraFuture,
 
-    pub exclusive_mode: AtomicBool,
+    pub exclusive_mode: watch::Sender<bool>,
 
     /// Primitives bound to this thread via `expose` / `expose_mutable`.
     /// Broken when this thread reaches Terminated or Crashed.
@@ -99,7 +99,7 @@ impl ThreadState {
             terminate_bundle: Mutex::new(Some(TerminateBundle { signal_rx, result_tx })),
             terminate_signal_tx: Mutex::new(Some(signal_tx)),
             terminate_future,
-            exclusive_mode: AtomicBool::new(false),
+            exclusive_mode: watch::channel(false).0,
             owned_primitives: std::sync::Mutex::new(Vec::new()),
         })
     }
@@ -175,10 +175,16 @@ impl ThreadState {
     }
 
     pub fn exclusive_mode(&self) -> bool {
-        self.exclusive_mode.load(Ordering::Relaxed)
+        *self.exclusive_mode.borrow()
     }
 
     pub fn set_exclusive(&self, v: bool) {
-        self.exclusive_mode.store(v, Ordering::Relaxed);
+        let _ = self.exclusive_mode.send(v);
+    }
+
+    /// Subscribe to exclusive-mode changes. Use `rx.wait_for(|&v| !v).await`
+    /// to block without busy-waiting until exclusive mode ends.
+    pub fn subscribe_exclusive(&self) -> watch::Receiver<bool> {
+        self.exclusive_mode.subscribe()
     }
 }
