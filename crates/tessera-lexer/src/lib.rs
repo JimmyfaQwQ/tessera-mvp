@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_assignments)]
 mod token;
 pub use token::Token;
 
@@ -16,7 +15,6 @@ pub type TokenStream = Vec<Spanned<Token>>;
 
 /// A lexing error: one or more contiguous characters the lexer could not
 /// recognise. Previously these were silently turned into `Token::Error`.
-#[allow(unused)]
 #[derive(Debug, Clone, Error, Diagnostic)]
 #[error("unexpected character{plural} `{text}`")]
 #[diagnostic(code(tessera::lex::unexpected_char))]

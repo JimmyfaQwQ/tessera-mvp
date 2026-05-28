@@ -1,6 +1,7 @@
 use std::sync::Mutex;
 use tokio::sync::Notify;
 use crate::Value;
+use crate::thread_state::ThreadId;
 
 /// `locked<T>` — concurrent-safe shared value.
 ///
@@ -8,8 +9,8 @@ use crate::Value;
 ///
 /// **Explicit (sync) interface** — `lock` / `tryLock` / `unlock` / `isLocked`:
 ///   Used when a single Tessera thread needs to hold the lock across multiple
-///   operations. The `owner_id` must be stable per Tessera thread; the
-///   interpreter passes the `Arc<ThreadState>` pointer address.
+///   operations. The `owner_id` is the unique `ThreadState::id` of the holding
+///   Tessera thread.
 ///
 /// **Implicit (async) interface** — `get` / `set`:
 ///   Convenience methods that wait until no explicit lock is held, then
@@ -24,7 +25,7 @@ pub struct TesseraLocked {
 struct LockedInner {
     value: Value,
     /// `Some(owner_id)` while explicitly locked; `None` when free.
-    owner: Option<usize>,
+    owner: Option<ThreadId>,
 }
 
 impl std::fmt::Debug for TesseraLocked {
@@ -47,7 +48,7 @@ impl TesseraLocked {
     /// Acquire the explicit lock for `owner_id`.
     /// Suspends (async) until the lock is free.
     /// Returns `Err(())` if `owner_id` already holds the lock (reentrance).
-    pub async fn lock(&self, owner_id: usize) -> Result<(), ()> {
+    pub async fn lock(&self, owner_id: ThreadId) -> Result<(), ()> {
         loop {
             {
                 let mut g = self.inner.lock().unwrap();
@@ -64,7 +65,7 @@ impl TesseraLocked {
     /// Non-blocking attempt to acquire the explicit lock.
     /// Returns `Err(())` on reentrance, `Ok(true)` if acquired, `Ok(false)` if held by another.
     #[allow(clippy::result_unit_err)]
-    pub fn try_lock(&self, owner_id: usize) -> Result<bool, ()> {
+    pub fn try_lock(&self, owner_id: ThreadId) -> Result<bool, ()> {
         let mut g = self.inner.lock().unwrap();
         match g.owner {
             Some(id) if id == owner_id => Err(()),
@@ -75,7 +76,7 @@ impl TesseraLocked {
 
     /// Release the explicit lock.
     /// Returns `false` if `owner_id` does not currently own it.
-    pub fn unlock(&self, owner_id: usize) -> bool {
+    pub fn unlock(&self, owner_id: ThreadId) -> bool {
         let mut g = self.inner.lock().unwrap();
         if g.owner == Some(owner_id) {
             g.owner = None;

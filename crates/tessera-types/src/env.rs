@@ -1,4 +1,9 @@
-#![allow(dead_code, unused_assignments)]
+//! Type-checking scope chain plus template/func-signature registries.
+//!
+//! This is the type-typed (`Type`) sibling of `tessera_interp::env::Env`,
+//! which is the runtime value-typed scope chain. The two are intentionally not
+//! unified — see the doc comment on `tessera_interp::env` for rationale.
+
 use indexmap::IndexMap;
 use crate::ty::{Type, TemplateInfo};
 
@@ -120,7 +125,6 @@ impl TypeEnv {
     }
 }
 
-#[allow(unused)]
 #[derive(Debug, Clone, thiserror::Error, miette::Diagnostic)]
 #[error("{message}")]
 #[diagnostic(code(tessera::typecheck))]

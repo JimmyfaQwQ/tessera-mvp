@@ -17,6 +17,14 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::eval::{Interpreter, find_thread_hook, find_handler};
 
+// `let _ = …_tx.send(…)` appears throughout this file on `ready_tx` and
+// `result_tx`. Both senders are oneshot channels whose receivers may legitimately
+// be dropped (fire-and-forget thread spawns, parents that gave up waiting). A
+// failed send means "the listener is gone" — no action to take, no log to emit.
+// The same applies to `req.result_tx.send(...)` inside `drain_handlers`: the
+// dispatcher has already moved on, and a missed send simply degrades a precise
+// `TargetTerminating` into a generic `TargetCrashed` (via the oneshot::Receiver
+// in `ThreadState::dispatch_handler`).
 pub async fn run_thread_task(
     interp: Interpreter,
     decl: Option<Arc<ThreadTemplateDecl>>,
@@ -32,13 +40,18 @@ pub async fn run_thread_task(
 
     if let Some(d) = &decl {
         // Register member functions into func_table so the thread body can call them.
-        for m in &d.members {
-            let func: Option<&FuncDef> = match m {
-                MemberFunc(f) | OnEnter(f) | OnExit(f) | OnTerminate(f) => Some(f),
-                _ => None,
-            };
-            if let Some(f) = func {
-                interp.0.func_table.borrow_mut().insert(f.name.name.clone(), Arc::new(f.clone()));
+        // First mutation on a thread-local interp state pays the Rc clone via make_mut.
+        {
+            let mut table = interp.0.func_table.borrow_mut();
+            let table = std::rc::Rc::make_mut(&mut table);
+            for m in &d.members {
+                let func: Option<&FuncDef> = match m {
+                    MemberFunc(f) | OnEnter(f) | OnExit(f) | OnTerminate(f) => Some(f),
+                    _ => None,
+                };
+                if let Some(f) = func {
+                    table.insert(f.name.name.clone(), Arc::new(f.clone()));
+                }
             }
         }
 
@@ -84,6 +97,21 @@ pub async fn run_thread_task(
             }
         }
         // Bind template params into template_self (so mini-threads can access via self.paramName).
+        // Arity mismatch here means the type checker let through a malformed
+        // call: crash the thread rather than silently dropping or zero-filling.
+        if d.params.len() != args.len() {
+            let template_name = d.name.as_ref().map(|i| i.name.as_str()).unwrap_or("<anonymous>");
+            let msg = format!(
+                "thread template '{}' expects {} argument(s), got {}",
+                template_name, d.params.len(), args.len(),
+            );
+            state.set_status(ThreadStatus::Crashed(msg.clone())).await;
+            drain_handlers(&mut handler_rx, HandlerDispatchError::TargetCrashed);
+            if let Some(b) = state.take_terminate_bundle().await {
+                let _ = b.result_tx.send(FutureOutcome::Failed(msg));
+            }
+            return;
+        }
         for (param, val) in d.params.iter().zip(args.into_iter()) {
             self_map.borrow_mut().insert(param.name.name.clone(), val);
         }
@@ -115,10 +143,8 @@ pub async fn run_thread_task(
 
     // ── Claim terminate channels (always present from ThreadState::new) ──────
 
-    let TerminateBundle { signal_rx: mut terminate_rx, result_tx } = state
-        .take_terminate_bundle()
-        .await
-        .expect("terminate bundle always present");
+    let TerminateBundle { signal_rx: mut terminate_rx, result_tx } =
+        state.take_terminate_bundle_or_panic().await;
     let mut result_tx = Some(result_tx);
 
     // ── Main event loop ──────────────────────────────────────────────────────

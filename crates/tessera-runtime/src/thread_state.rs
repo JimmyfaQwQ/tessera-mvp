@@ -135,8 +135,29 @@ impl ThreadState {
     }
 
     /// Called once by the event loop at startup to claim the terminate channels.
+    ///
+    /// Returns `None` only if it has already been taken — calling code must
+    /// ensure this is invoked exactly once per `ThreadState`. Use
+    /// [`Self::take_terminate_bundle_or_panic`] when the caller is the
+    /// unique owner (the event loop) and a second take indicates a bug.
     pub async fn take_terminate_bundle(&self) -> Option<TerminateBundle> {
         self.terminate_bundle.lock().await.take()
+    }
+
+    /// Claim the terminate bundle, panicking if it has already been taken.
+    ///
+    /// # Invariant
+    ///
+    /// `ThreadState::new` always installs the bundle, and only the event loop
+    /// for this thread is allowed to claim it (exactly once, before entering
+    /// the main loop body). A second call indicates the event loop was invoked
+    /// twice for the same `ThreadState`, which is a bug — fail loudly.
+    pub async fn take_terminate_bundle_or_panic(&self) -> TerminateBundle {
+        self.terminate_bundle
+            .lock()
+            .await
+            .take()
+            .expect("terminate bundle already taken — event loop invoked twice on this ThreadState")
     }
 
     /// Dispatch a handler call. Returns a Future the caller can await.

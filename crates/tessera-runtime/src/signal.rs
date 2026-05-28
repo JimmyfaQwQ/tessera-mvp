@@ -33,6 +33,45 @@ pub trait BreakablePrimitive: Send + Sync {
     fn break_with(&self, reason: BrokenReason);
 }
 
+// ── Shared helpers (signal & contract) ────────────────────────────────────────
+
+/// First-expose-wins ownership flag used by all three primitives.
+///
+/// Once `try_claim()` returns true, every subsequent call returns false.
+/// The interpreter uses this so a primitive is bound to at most one thread.
+#[derive(Debug)]
+struct Ownership(AtomicBool);
+
+impl Ownership {
+    const fn new() -> Self { Self(AtomicBool::new(false)) }
+
+    fn try_claim(&self) -> bool {
+        self.0.compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed).is_ok()
+    }
+}
+
+/// Read-only accessors shared by `TesseraSignal` and `TesseraContract`, both of
+/// which hold a `Mutex<S>` where `S` has a `broken: Option<BrokenReason>` field.
+/// `TesseraPermit` uses `tokio::Semaphore::close()` for broken state and so does
+/// not participate.
+trait HasBroken {
+    fn read_broken(&self) -> Option<BrokenReason>;
+}
+
+#[inline]
+fn broken_is_some<S: HasBroken>(state: &S) -> bool { state.read_broken().is_some() }
+
+#[inline]
+fn broken_is_none<S: HasBroken>(state: &S) -> bool { state.read_broken().is_none() }
+
+impl HasBroken for SignalState {
+    fn read_broken(&self) -> Option<BrokenReason> { self.broken.clone() }
+}
+
+impl HasBroken for ContractState {
+    fn read_broken(&self) -> Option<BrokenReason> { self.broken.clone() }
+}
+
 // ── signal ────────────────────────────────────────────────────────────────────
 
 struct SignalState {
@@ -51,7 +90,7 @@ pub struct TesseraSignal {
     /// Notified on every state change (raise, reset, broken).
     changed: tokio::sync::Notify,
     /// True once ownership has been claimed (first expose wins).
-    claimed: AtomicBool,
+    claimed: Ownership,
 }
 
 impl std::fmt::Debug for TesseraSignal {
@@ -74,7 +113,7 @@ impl TesseraSignal {
         Self {
             state: Mutex::new(SignalState { raised: false, broken: None }),
             changed: tokio::sync::Notify::new(),
-            claimed: AtomicBool::new(false),
+            claimed: Ownership::new(),
         }
     }
 
@@ -101,17 +140,15 @@ impl TesseraSignal {
         s.raised && s.broken.is_none()
     }
 
-    pub fn is_ok(&self)  -> bool { self.state.lock().unwrap().broken.is_none() }
-    pub fn is_err(&self) -> bool { self.state.lock().unwrap().broken.is_some() }
+    pub fn is_ok(&self)  -> bool { broken_is_none(&*self.state.lock().unwrap()) }
+    pub fn is_err(&self) -> bool { broken_is_some(&*self.state.lock().unwrap()) }
 
     pub fn broken_reason(&self) -> Option<BrokenReason> {
-        self.state.lock().unwrap().broken.clone()
+        self.state.lock().unwrap().read_broken()
     }
 
     /// First expose wins ownership. Returns true if this call claimed it.
-    pub fn try_claim_ownership(&self) -> bool {
-        self.claimed.compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed).is_ok()
-    }
+    pub fn try_claim_ownership(&self) -> bool { self.claimed.try_claim() }
 
     /// Suspend until raised. Returns `Err` if the signal is (or becomes) broken.
     /// The caller is responsible for converting `Err` into a thread panic.
@@ -154,7 +191,7 @@ struct ContractState {
 pub struct TesseraContract {
     state: Mutex<ContractState>,
     changed: tokio::sync::Notify,
-    claimed: AtomicBool,
+    claimed: Ownership,
 }
 
 impl std::fmt::Debug for TesseraContract {
@@ -177,7 +214,7 @@ impl TesseraContract {
         Self {
             state: Mutex::new(ContractState { pending: false, broken: None }),
             changed: tokio::sync::Notify::new(),
-            claimed: AtomicBool::new(false),
+            claimed: Ownership::new(),
         }
     }
 
@@ -196,16 +233,14 @@ impl TesseraContract {
         s.pending && s.broken.is_none()
     }
 
-    pub fn is_ok(&self)  -> bool { self.state.lock().unwrap().broken.is_none() }
-    pub fn is_err(&self) -> bool { self.state.lock().unwrap().broken.is_some() }
+    pub fn is_ok(&self)  -> bool { broken_is_none(&*self.state.lock().unwrap()) }
+    pub fn is_err(&self) -> bool { broken_is_some(&*self.state.lock().unwrap()) }
 
     pub fn broken_reason(&self) -> Option<BrokenReason> {
-        self.state.lock().unwrap().broken.clone()
+        self.state.lock().unwrap().read_broken()
     }
 
-    pub fn try_claim_ownership(&self) -> bool {
-        self.claimed.compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed).is_ok()
-    }
+    pub fn try_claim_ownership(&self) -> bool { self.claimed.try_claim() }
 
     /// Consume one notification; suspends if none is available.
     /// Returns `Err` if broken with no pending notification.
@@ -253,7 +288,7 @@ impl BreakablePrimitive for TesseraContract {
 pub struct TesseraPermit {
     sem: tokio::sync::Semaphore,
     broken: Mutex<Option<BrokenReason>>,
-    claimed: AtomicBool,
+    claimed: Ownership,
 }
 
 impl std::fmt::Debug for TesseraPermit {
@@ -272,7 +307,7 @@ impl TesseraPermit {
         Self {
             sem: tokio::sync::Semaphore::new(initial as usize),
             broken: Mutex::new(None),
-            claimed: AtomicBool::new(false),
+            claimed: Ownership::new(),
         }
     }
 
@@ -302,9 +337,7 @@ impl TesseraPermit {
         self.broken.lock().unwrap().clone()
     }
 
-    pub fn try_claim_ownership(&self) -> bool {
-        self.claimed.compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed).is_ok()
-    }
+    pub fn try_claim_ownership(&self) -> bool { self.claimed.try_claim() }
 
     /// Acquire one permit; suspends (FIFO) until one is available.
     /// Returns `Err` if broken.

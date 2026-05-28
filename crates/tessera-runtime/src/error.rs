@@ -1,9 +1,7 @@
-#![allow(dead_code, unused_assignments)]
 use miette::Diagnostic;
 use thiserror::Error;
 use tessera_ast::Span;
 
-#[allow(unused)]
 #[derive(Debug, Clone, Error, Diagnostic)]
 pub enum RuntimeError {
     #[error("panic: {message}")]
@@ -152,6 +150,39 @@ impl RuntimeError {
             RuntimeError::HandlerDispatch(_) => Span::dummy(),
         }
     }
+
+    /// Stable (kind, message) pair used by the interpreter to build
+    /// `Value::ErrorObj` for `try` results. Centralised here so a new variant
+    /// in `RuntimeError` is a single-file change.
+    pub fn kind_and_message(&self) -> (String, String) {
+        match self {
+            RuntimeError::Panic { message, .. } =>
+                ("Panic".into(), message.clone()),
+            RuntimeError::AssertionFailed { message, .. } =>
+                ("AssertionFailed".into(), message.clone()),
+            RuntimeError::IndexOutOfBounds { index, length, .. } =>
+                ("IndexOutOfBounds".into(), format!("index {index}, length {length}")),
+            RuntimeError::DivisionByZero { .. } =>
+                ("DivisionByZero".into(), "division by zero".into()),
+            RuntimeError::UnwrapNone { .. } =>
+                ("UnwrapNone".into(), "unwrap on None".into()),
+            RuntimeError::UnwrapErr { .. } =>
+                ("UnwrapErr".into(), "unwrap on Err".into()),
+            RuntimeError::TypeMismatch { expected, got, .. } =>
+                ("TypeMismatch".into(), format!("expected {expected}, got {got}")),
+            RuntimeError::UndefinedVariable { name, .. } =>
+                ("UndefinedVariable".into(), format!("undefined variable '{name}'")),
+            RuntimeError::ReentrantLock { .. } =>
+                ("ReentrantLock".into(), "reentrant lock".into()),
+            RuntimeError::UnlockNotOwned { .. } =>
+                ("UnlockNotOwned".into(), "unlock not owned".into()),
+            RuntimeError::ExposeMutableFieldReplace { .. } =>
+                ("ExposeMutableFieldReplace".into(), "cannot replace expose_mutable field from outside".into()),
+            RuntimeError::HandlerDispatch(de) => de.kind_and_message(),
+            RuntimeError::Structured { kind, message, .. } =>
+                (kind.clone(), message.clone()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -162,4 +193,15 @@ pub enum HandlerDispatchError {
     TargetTerminating,
     #[error("target thread has crashed")]
     TargetCrashed,
+}
+
+impl HandlerDispatchError {
+    pub fn kind_and_message(&self) -> (String, String) {
+        let kind = match self {
+            HandlerDispatchError::TargetTerminated  => "TargetGone",
+            HandlerDispatchError::TargetTerminating => "TargetTerminating",
+            HandlerDispatchError::TargetCrashed     => "TargetCrashed",
+        };
+        (kind.into(), self.to_string())
+    }
 }

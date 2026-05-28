@@ -1,125 +1,30 @@
+mod stdio;
+mod helpers;
+mod builtin;
+
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use std::sync::{Arc, OnceLock};
-
-use tokio::sync::{mpsc, Mutex as AsyncMutex};
-
-/// A single background OS thread reads stdin and sends chars into this channel.
-/// Using std::thread::spawn (not spawn_blocking) means tokio does not wait for
-/// it on shutdown, so the process can exit cleanly without an extra keypress.
-fn stdin_receiver() -> &'static AsyncMutex<mpsc::Receiver<Option<char>>> {
-    static INSTANCE: OnceLock<AsyncMutex<mpsc::Receiver<Option<char>>>> = OnceLock::new();
-    INSTANCE.get_or_init(|| {
-        let (tx, rx) = mpsc::channel(256);
-        std::thread::spawn(move || {
-            use std::io::Read;
-            let stdin = std::io::stdin();
-            let mut handle = stdin.lock();
-            let mut first = [0u8; 1];
-            loop {
-                match handle.read(&mut first) {
-                    Ok(0) | Err(_) => { let _ = tx.blocking_send(None); break; }
-                    Ok(_) => {
-                        let byte = first[0];
-                        let seq_len = if byte < 0x80 { 1 }
-                                      else if byte < 0xE0 { 2 }
-                                      else if byte < 0xF0 { 3 }
-                                      else { 4 };
-                        let mut buf = [0u8; 4];
-                        buf[0] = byte;
-                        if seq_len > 1 && handle.read_exact(&mut buf[1..seq_len]).is_err() {
-                            let _ = tx.blocking_send(None);
-                            break;
-                        }
-                        let ch = std::str::from_utf8(&buf[..seq_len])
-                            .ok()
-                            .and_then(|s| s.chars().next());
-                        if tx.blocking_send(ch).is_err() { break; }
-                    }
-                }
-            }
-        });
-        AsyncMutex::new(rx)
-    })
-}
+use std::sync::Arc;
 
 use async_recursion::async_recursion;
 use tessera_ast::*;
 use tessera_runtime::{
-    Value, RuntimeError, QueuePushError, HandlerDispatchError,
+    Value, RuntimeError,
     TesseraLocked, TesseraQueue, TesseraSignal, TesseraContract, TesseraPermit,
     FutureOutcome, TesseraFuture, HandlerResolveResult, ThreadState,
     HandlerRequest, BreakablePrimitive, BrokenReason,
 };
-use tessera_runtime::value::ValueKey;
 use crate::env::Env;
 
-// ── Structured-error helpers ──────────────────────────────────────────────────
-
-fn dispatch_error_to_kind(e: &HandlerDispatchError) -> (String, String) {
-    match e {
-        HandlerDispatchError::TargetTerminated  => ("TargetGone".into(),       e.to_string()),
-        HandlerDispatchError::TargetTerminating => ("TargetTerminating".into(), e.to_string()),
-        HandlerDispatchError::TargetCrashed     => ("TargetCrashed".into(),    e.to_string()),
-    }
-}
-
-/// Convert any RuntimeError into a `Value::ErrorObj` for use in `try` results.
-fn runtime_error_to_error_obj(e: &RuntimeError) -> Value {
-    let (kind, message) = match e {
-        RuntimeError::Panic { message, .. } =>
-            ("Panic".into(), message.clone()),
-        RuntimeError::AssertionFailed { message, .. } =>
-            ("AssertionFailed".into(), message.clone()),
-        RuntimeError::IndexOutOfBounds { index, length, .. } =>
-            ("IndexOutOfBounds".into(), format!("index {index}, length {length}")),
-        RuntimeError::DivisionByZero { .. } =>
-            ("DivisionByZero".into(), "division by zero".into()),
-        RuntimeError::UnwrapNone { .. } =>
-            ("UnwrapNone".into(), "unwrap on None".into()),
-        RuntimeError::UnwrapErr { .. } =>
-            ("UnwrapErr".into(), "unwrap on Err".into()),
-        RuntimeError::TypeMismatch { expected, got, .. } =>
-            ("TypeMismatch".into(), format!("expected {expected}, got {got}")),
-        RuntimeError::UndefinedVariable { name, .. } =>
-            ("UndefinedVariable".into(), format!("undefined variable '{name}'")),
-        RuntimeError::ReentrantLock { .. } =>
-            ("ReentrantLock".into(), "reentrant lock".into()),
-        RuntimeError::UnlockNotOwned { .. } =>
-            ("UnlockNotOwned".into(), "unlock not owned".into()),
-        RuntimeError::ExposeMutableFieldReplace { .. } =>
-            ("ExposeMutableFieldReplace".into(), "cannot replace expose_mutable field from outside".into()),
-        RuntimeError::HandlerDispatch(de) => {
-            let (kind, msg) = dispatch_error_to_kind(de);
-            (kind, msg)
-        }
-        RuntimeError::Structured { kind, message, .. } =>
-            (kind.clone(), message.clone()),
-    };
-    Value::ErrorObj { kind, message }
-}
-
-/// Collect Arc<dyn BreakablePrimitive> for all define fields in self_map that hold
-/// a Signal, Contract, or Permit. Used for scope binding in exec_scope_block.
-fn collect_define_field_prims(
-    self_map: &Rc<RefCell<HashMap<String, Value>>>,
-    define_names: &[String],
-) -> Vec<Arc<dyn BreakablePrimitive>> {
-    let map = self_map.borrow();
-    let mut prims: Vec<Arc<dyn BreakablePrimitive>> = Vec::new();
-    for name in define_names {
-        if let Some(val) = map.get(name) {
-            match val {
-                Value::Signal(s)   => prims.push(Arc::clone(s) as Arc<dyn BreakablePrimitive>),
-                Value::Contract(c) => prims.push(Arc::clone(c) as Arc<dyn BreakablePrimitive>),
-                Value::Permit(p)   => prims.push(Arc::clone(p) as Arc<dyn BreakablePrimitive>),
-                _ => {}
-            }
-        }
-    }
-    prims
-}
+use stdio::stdin_receiver;
+use helpers::{
+    collect_define_field_prims, eval_literal, find_scope_hook,
+    runtime_error_to_error_obj, runtime_type_matches, truthy,
+    type_expr_display, value_to_string, values_equal,
+};
+// Re-exported so event_loop can find lifecycle hooks/handlers on thread templates.
+pub use helpers::{find_handler, find_thread_hook};
 
 
 // ── Call-stack frames (for runtime tracebacks) ───────────────────────────────
@@ -140,9 +45,12 @@ type TemplateSelf = RefCell<Option<Rc<RefCell<HashMap<String, Value>>>>>;
 
 pub struct InterpState {
     pub env: RefCell<Env>,
-    pub func_table: RefCell<HashMap<String, Arc<FuncDef>>>,
-    pub scope_templates: RefCell<HashMap<String, Arc<ScopeTemplateDecl>>>,
-    pub thread_templates: RefCell<HashMap<String, Arc<ThreadTemplateDecl>>>,
+    // Spawn-time copy-on-write: child interp states share the Rc cheaply, and
+    // the first mutation per state (e.g. registering a thread template's
+    // member functions in event_loop) pays the deep clone via `Rc::make_mut`.
+    pub func_table: RefCell<Rc<HashMap<String, Arc<FuncDef>>>>,
+    pub scope_templates: RefCell<Rc<HashMap<String, Arc<ScopeTemplateDecl>>>>,
+    pub thread_templates: RefCell<Rc<HashMap<String, Arc<ThreadTemplateDecl>>>>,
     pub current_thread_state: RefCell<Option<Arc<ThreadState>>>,
     pub expose_field_names: RefCell<HashSet<String>>,
     pub expose_mutable_field_names: RefCell<HashSet<String>>,
@@ -157,13 +65,17 @@ pub struct InterpState {
     pub last_backtrace: RefCell<Option<Vec<Frame>>>,
 }
 
+impl Default for InterpState {
+    fn default() -> Self { Self::new() }
+}
+
 impl InterpState {
     pub fn new() -> Self {
         Self {
             env: RefCell::new(Env::new()),
-            func_table: RefCell::new(HashMap::new()),
-            scope_templates: RefCell::new(HashMap::new()),
-            thread_templates: RefCell::new(HashMap::new()),
+            func_table: RefCell::new(Rc::new(HashMap::new())),
+            scope_templates: RefCell::new(Rc::new(HashMap::new())),
+            thread_templates: RefCell::new(Rc::new(HashMap::new())),
             current_thread_state: RefCell::new(None),
             expose_field_names: RefCell::new(HashSet::new()),
             expose_mutable_field_names: RefCell::new(HashSet::new()),
@@ -177,9 +89,9 @@ impl InterpState {
     pub fn new_for_thread(parent: &Rc<InterpState>) -> Rc<InterpState> {
         Rc::new(InterpState {
             env: RefCell::new(Env::new()),
-            func_table: RefCell::new(parent.func_table.borrow().clone()),
-            scope_templates: RefCell::new(parent.scope_templates.borrow().clone()),
-            thread_templates: RefCell::new(parent.thread_templates.borrow().clone()),
+            func_table: RefCell::new(Rc::clone(&parent.func_table.borrow())),
+            scope_templates: RefCell::new(Rc::clone(&parent.scope_templates.borrow())),
+            thread_templates: RefCell::new(Rc::clone(&parent.thread_templates.borrow())),
             current_thread_state: RefCell::new(None),
             expose_field_names: RefCell::new(HashSet::new()),
             expose_mutable_field_names: RefCell::new(HashSet::new()),
@@ -194,9 +106,9 @@ impl InterpState {
     pub fn new_for_mini_thread(parent: &Rc<InterpState>) -> Rc<InterpState> {
         Rc::new(InterpState {
             env: RefCell::new(Env::new()),
-            func_table: RefCell::new(parent.func_table.borrow().clone()),
-            scope_templates: RefCell::new(parent.scope_templates.borrow().clone()),
-            thread_templates: RefCell::new(parent.thread_templates.borrow().clone()),
+            func_table: RefCell::new(Rc::clone(&parent.func_table.borrow())),
+            scope_templates: RefCell::new(Rc::clone(&parent.scope_templates.borrow())),
+            thread_templates: RefCell::new(Rc::clone(&parent.thread_templates.borrow())),
             // Share thread state so expose sync works from mini-threads
             current_thread_state: RefCell::new(parent.current_thread_state.borrow().clone()),
             expose_field_names: RefCell::new(parent.expose_field_names.borrow().clone()),
@@ -239,19 +151,19 @@ impl Interpreter {
             match item {
                 TopLevelItem::ScopeTemplateDecl(d) => {
                     if let Some(name) = &d.name {
-                        self.0.scope_templates.borrow_mut()
-                            .insert(name.name.clone(), Arc::new(d.clone()));
+                        let mut table = self.0.scope_templates.borrow_mut();
+                        Rc::make_mut(&mut table).insert(name.name.clone(), Arc::new(d.clone()));
                     }
                 }
                 TopLevelItem::ThreadTemplateDecl(d) => {
                     if let Some(name) = &d.name {
-                        self.0.thread_templates.borrow_mut()
-                            .insert(name.name.clone(), Arc::new(d.clone()));
+                        let mut table = self.0.thread_templates.borrow_mut();
+                        Rc::make_mut(&mut table).insert(name.name.clone(), Arc::new(d.clone()));
                     }
                 }
                 TopLevelItem::FuncDef(f) => {
-                    self.0.func_table.borrow_mut()
-                        .insert(f.name.name.clone(), Arc::new(f.clone()));
+                    let mut table = self.0.func_table.borrow_mut();
+                    Rc::make_mut(&mut table).insert(f.name.name.clone(), Arc::new(f.clone()));
                 }
                 TopLevelItem::Statement(_) => {}
             }
@@ -354,17 +266,20 @@ impl Interpreter {
                 Ok(None)
             }
             Stmt::If(i) => {
-                let cond = self.eval_expr(&i.condition).await?;
-                if truthy(cond) {
-                    return self.exec_block(&i.then_block).await;
-                }
-                if let Some(eb) = &i.else_branch {
-                    match eb {
-                        ElseBranch::Else(b) => return self.exec_block(b).await,
-                        ElseBranch::ElseIf(s) => return self.exec_stmt(&Stmt::If(*s.clone())).await,
+                // Walk the if / else-if chain iteratively so we don't have to
+                // clone each nested IfStmt to recurse into exec_stmt.
+                let mut cur = i;
+                loop {
+                    let cond = self.eval_expr(&cur.condition).await?;
+                    if truthy(cond) {
+                        return self.exec_block(&cur.then_block).await;
+                    }
+                    match &cur.else_branch {
+                        None => return Ok(None),
+                        Some(ElseBranch::Else(b)) => return self.exec_block(b).await,
+                        Some(ElseBranch::ElseIf(next)) => cur = next.as_ref(),
                     }
                 }
-                Ok(None)
             }
             Stmt::While(w) => {
                 loop {
@@ -474,6 +389,16 @@ impl Interpreter {
             // Build self_map for scope template fields so `self.xxx` works.
             let self_map: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<String, Value>>> =
                 std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashMap::new()));
+            if decl.params.len() != sb.args.len() {
+                let template_name = decl.name.as_ref().map(|i| i.name.as_str()).unwrap_or("<anonymous>");
+                return Err(RuntimeError::Panic {
+                    message: format!(
+                        "scope template '{}' expects {} argument(s), got {}",
+                        template_name, decl.params.len(), sb.args.len(),
+                    ),
+                    location: sb.span,
+                });
+            }
             for (param, arg_expr) in decl.params.iter().zip(sb.args.iter()) {
                 let v = self.eval_expr(arg_expr).await?;
                 self_map.borrow_mut().insert(param.name.name.clone(), v);
@@ -760,7 +685,7 @@ impl Interpreter {
                     // responding to handlers without consuming scheduler time.
                     // Silently dropped when terminate() fires; no cleanup needed.
                     std::future::pending::<()>().await;
-                    return Ok(Value::Void); // unreachable
+                    unreachable!("pending::<()>() never resolves");
                 }
                 "getchar" => {
                     // Release the lock before yielding so the mutex is not held
@@ -909,341 +834,8 @@ impl Interpreter {
         }
     }
 
-    // ── Method calls ──────────────────────────────────────────────────────────
+    // `eval_method_call` and `current_thread_id` live in `builtin.rs`.
 
-    async fn eval_method_call(&self, m: &MethodCallExpr) -> Result<Value, RuntimeError> {
-        let recv = self.eval_expr(&m.receiver).await?;
-        let mut args = Vec::new();
-        for a in &m.args { args.push(self.eval_expr(a).await?); }
-
-        match (&m.method.name[..], recv.clone()) {
-            // ── Option ────────────────────────────────────────────────────────
-            ("isSome", Value::Option(v)) => Ok(Value::Bool(v.is_some())),
-            ("isNone", Value::Option(v)) => Ok(Value::Bool(v.is_none())),
-            ("unwrap", Value::Option(Some(v))) => Ok(*v),
-            ("unwrap", Value::Option(None)) => Err(RuntimeError::UnwrapNone { location: m.span }),
-            ("unwrapOr", Value::Option(Some(v))) => Ok(*v),
-            ("unwrapOr", Value::Option(None)) => Ok(args.into_iter().next().unwrap_or(Value::Void)),
-
-            // ── Result ────────────────────────────────────────────────────────
-            ("isOk",  Value::Result(r)) => Ok(Value::Bool(r.is_ok())),
-            ("isErr", Value::Result(r)) => Ok(Value::Bool(r.is_err())),
-            ("unwrap",    Value::Result(Ok(v)))  => Ok(*v),
-            ("unwrap",    Value::Result(Err(_))) => Err(RuntimeError::UnwrapErr { location: m.span }),
-            ("unwrapErr", Value::Result(Err(e))) => Ok(*e),
-            ("unwrapErr", Value::Result(Ok(_)))  => Err(RuntimeError::UnwrapErr { location: m.span }),
-            ("unwrapOr",  Value::Result(Ok(v)))  => Ok(*v),
-            ("unwrapOr",  Value::Result(Err(_))) => Ok(args.into_iter().next().unwrap_or(Value::Void)),
-
-            // ── List ──────────────────────────────────────────────────────────
-            ("length", Value::List(l)) => Ok(Value::Int(l.borrow().len() as i32)),
-            ("length", Value::Str(s))  => Ok(Value::Int(s.chars().count() as i32)),
-            ("isEmpty", Value::List(l)) => Ok(Value::Bool(l.borrow().is_empty())),
-
-            // ── Type conversions ───────────────────────────────────────────────
-            ("toString", Value::Int(n))    => Ok(Value::Str(n.to_string())),
-            ("toString", Value::Double(f)) => Ok(Value::Str(f.to_string())),
-            ("toString", Value::Char(c))   => Ok(Value::Str(c.to_string())),
-            ("toString", Value::Bool(b))   => Ok(Value::Str(b.to_string())),
-            ("toInt",    Value::Double(f)) => Ok(Value::Int(f as i32)),
-            ("toInt",    Value::Char(c))   => Ok(Value::Int(c as i32)),
-            ("toInt",    Value::Str(s)) => Ok(Value::Result(
-                s.trim().parse::<i32>()
-                    .map(|n| Box::new(Value::Int(n)))
-                    .map_err(|e| Box::new(Value::Str(e.to_string())))
-            )),
-            ("toDouble", Value::Int(n))  => Ok(Value::Double(n as f64)),
-            ("toDouble", Value::Str(s))  => Ok(Value::Result(
-                s.trim().parse::<f64>()
-                    .map(|f| Box::new(Value::Double(f)))
-                    .map_err(|e| Box::new(Value::Str(e.to_string())))
-            )),
-            ("toChar",   Value::Int(n)) => Ok(Value::Option(
-                char::from_u32(n as u32).map(|c| Box::new(Value::Char(c)))
-            )),
-            ("push", Value::List(l)) => {
-                l.borrow_mut().push(args.into_iter().next().unwrap_or(Value::Void));
-                Ok(Value::Void)
-            }
-            ("pop", Value::List(l)) => Ok(
-                l.borrow_mut().pop()
-                    .map(|v| Value::Option(Some(Box::new(v))))
-                    .unwrap_or(Value::Option(None))
-            ),
-            ("get", Value::List(l)) => {
-                if let Some(Value::Int(i)) = args.first() {
-                    let l = l.borrow();
-                    let idx = *i as usize;
-                    if idx >= l.len() {
-                        return Err(RuntimeError::IndexOutOfBounds {
-                            index: *i, length: l.len() as i32, location: m.span,
-                        });
-                    }
-                    Ok(l[idx].clone())
-                } else {
-                    Err(RuntimeError::Panic {
-                        message: "List.get() requires an int index".into(),
-                        location: m.span,
-                    })
-                }
-            }
-            ("set", Value::List(l)) => {
-                if let (Some(Value::Int(i)), Some(v)) = (args.first(), args.get(1)) {
-                    let mut l = l.borrow_mut();
-                    let idx = *i as usize;
-                    if idx >= l.len() {
-                        return Err(RuntimeError::IndexOutOfBounds {
-                            index: *i, length: l.len() as i32, location: m.span,
-                        });
-                    }
-                    l[idx] = v.clone();
-                    Ok(Value::Void)
-                } else {
-                    Err(RuntimeError::Panic {
-                        message: "List.set() requires an int index and a value".into(),
-                        location: m.span,
-                    })
-                }
-            }
-
-            // ── Map ───────────────────────────────────────────────────────────
-            ("size", Value::Map(m_val)) => Ok(Value::Int(m_val.borrow().len() as i32)),
-            ("get", Value::Map(m_val)) => {
-                let key = args.into_iter().next();
-                let result = key.and_then(|k| {
-                    ValueKey::try_from(k).ok()
-                        .and_then(|vk| m_val.borrow().get(&vk).cloned())
-                });
-                Ok(Value::Option(result.map(Box::new)))
-            }
-            ("set", Value::Map(m_val)) => {
-                if let (Some(key), Some(val)) = (args.first().cloned(), args.get(1).cloned()) {
-                    match ValueKey::try_from(key) {
-                        Ok(vk) => { m_val.borrow_mut().insert(vk, val); }
-                        Err(_) => return Err(RuntimeError::Panic {
-                            message: "Map.set() key type is not hashable (must be bool/int/char/String)".into(),
-                            location: m.span,
-                        }),
-                    }
-                } else {
-                    return Err(RuntimeError::Panic {
-                        message: "Map.set() requires a key and a value".into(),
-                        location: m.span,
-                    });
-                }
-                Ok(Value::Void)
-            }
-            ("remove", Value::Map(m_val)) => {
-                let key = args.into_iter().next();
-                let removed = key.and_then(|k| {
-                    ValueKey::try_from(k).ok()
-                        .and_then(|vk| m_val.borrow_mut().shift_remove(&vk))
-                });
-                Ok(Value::Option(removed.map(Box::new)))
-            }
-
-            // ── Future .wait() / .isDone() ───────────────────────────────────
-            ("wait", Value::Future(fut)) => {
-                match fut.resolve().await {
-                    FutureOutcome::Ok(v) => Ok(v),
-                    FutureOutcome::Failed(msg) => Err(RuntimeError::Panic { message: msg, location: m.span }),
-                }
-            }
-            ("isDone", Value::Future(fut)) => {
-                Ok(Value::Bool(fut.is_done()))
-            }
-
-            // ── HandlerFuture .wait() (sync) / state checks ───────────────────
-            ("wait", Value::HandlerFuture(hf)) => {
-                match hf.resolve().await {
-                    HandlerResolveResult::Ok(v) => Ok(v),
-                    HandlerResolveResult::DispatchFailed(e) => {
-                        let (kind, message) = dispatch_error_to_kind(&e);
-                        Err(RuntimeError::Structured { kind, message, location: m.span })
-                    }
-                    HandlerResolveResult::ExecutionFailed(msg) =>
-                        Err(RuntimeError::Structured {
-                            kind: "ExecutionFailed".into(),
-                            message: msg,
-                            location: m.span,
-                        }),
-                }
-            }
-            ("isDone", Value::HandlerFuture(hf)) => Ok(Value::Bool(hf.is_done())),
-            ("isOk",   Value::HandlerFuture(hf)) => Ok(Value::Bool(hf.is_ok())),
-            ("isErr",  Value::HandlerFuture(hf)) => Ok(Value::Bool(hf.is_err())),
-
-            // ── ThreadHandle .terminate() ─────────────────────────────────────
-            ("terminate", Value::ThreadHandle(state)) => {
-                if !state.is_terminatable {
-                    return Err(RuntimeError::Panic {
-                        message: format!(
-                            "thread '{}' is not terminatable (no __on_terminate__ declared)",
-                            state.template_name.as_deref().unwrap_or("<anonymous>")
-                        ),
-                        location: m.span,
-                    });
-                }
-                let fut = state.terminate().await;
-                Ok(Value::Future(fut))
-            }
-
-            // ── ThreadHandle handler calls ────────────────────────────────────
-            (method, Value::ThreadHandle(state)) => {
-                let hf_result = state.dispatch_handler(method.to_string(), args).await;
-                match hf_result {
-                    Ok(fut) => Ok(Value::HandlerFuture(tessera_runtime::TesseraHandlerFuture::from_future(fut))),
-                    Err(e)  => Ok(Value::HandlerFuture(tessera_runtime::TesseraHandlerFuture::rejected(e))),
-                }
-            }
-
-            // ── Queue ─────────────────────────────────────────────────────────
-            ("push", Value::Queue(q)) => {
-                let v = args.into_iter().next().unwrap_or(Value::Void);
-                match q.push(v) {
-                    Ok(()) => Ok(Value::Result(Ok(Box::new(Value::Void)))),
-                    Err(QueuePushError::Full)   => Ok(Value::Result(Err(Box::new(Value::Str("Full".into()))))),
-                    Err(QueuePushError::Closed) => Ok(Value::Result(Err(Box::new(Value::Str("Closed".into()))))),
-                }
-            }
-            ("enqueue", Value::Queue(q)) => {
-                let v = args.into_iter().next().unwrap_or(Value::Void);
-                if !q.enqueue(v).await {
-                    return Err(RuntimeError::Panic {
-                        message: "QueueClosed".into(),
-                        location: m.span,
-                    });
-                }
-                Ok(Value::Void)
-            }
-            ("dequeue", Value::Queue(q)) => Ok(Value::Option(q.dequeue().await.map(Box::new))),
-            ("tryPush", Value::Queue(q)) => {
-                let v = args.into_iter().next().unwrap_or(Value::Void);
-                Ok(Value::Bool(q.try_push(v)))
-            }
-            ("tryPop", Value::Queue(q)) => Ok(Value::Option(q.try_pop().map(Box::new))),
-            ("size",    Value::Queue(q)) => Ok(Value::Int(q.size() as i32)),
-            ("isEmpty", Value::Queue(q)) => Ok(Value::Bool(q.is_empty())),
-            ("isClosed",Value::Queue(q)) => Ok(Value::Bool(q.is_closed())),
-            ("waitForNonEmpty", Value::Queue(q)) => { q.wait_for_non_empty().await; Ok(Value::Void) }
-            ("close",   Value::Queue(q)) => { q.close(); Ok(Value::Void) }
-
-            // ── locked<T> ─────────────────────────────────────────────────────
-            ("lock", Value::Locked(l)) => {
-                let owner_id = self.current_thread_id();
-                match l.lock(owner_id).await {
-                    Ok(()) => Ok(Value::Void),
-                    Err(()) => Err(RuntimeError::ReentrantLock { location: m.span }),
-                }
-            }
-            ("tryLock", Value::Locked(l)) => {
-                let owner_id = self.current_thread_id();
-                match l.try_lock(owner_id) {
-                    Ok(acquired) => Ok(Value::Bool(acquired)),
-                    Err(()) => Err(RuntimeError::ReentrantLock { location: m.span }),
-                }
-            }
-            ("unlock", Value::Locked(l)) => {
-                let owner_id = self.current_thread_id();
-                if l.unlock(owner_id) {
-                    Ok(Value::Void)
-                } else {
-                    Err(RuntimeError::UnlockNotOwned { location: m.span })
-                }
-            }
-            ("isLocked", Value::Locked(l)) => Ok(Value::Bool(l.is_locked())),
-            ("get", Value::Locked(l)) => Ok(l.get().await),
-            ("set", Value::Locked(l)) => {
-                let v = args.into_iter().next().unwrap_or(Value::Void);
-                l.set(v).await;
-                Ok(Value::Void)
-            }
-
-            // ── signal ────────────────────────────────────────────────────────
-            ("raise",    Value::Signal(s)) => { s.raise();  Ok(Value::Void) }
-            ("reset",    Value::Signal(s)) => { s.reset();  Ok(Value::Void) }
-            ("isRaised", Value::Signal(s)) => Ok(Value::Bool(s.is_raised())),
-            ("isOk",     Value::Signal(s)) => Ok(Value::Bool(s.is_ok())),
-            ("isErr",    Value::Signal(s)) => Ok(Value::Bool(s.is_err())),
-            ("wait",     Value::Signal(s)) => {
-                match s.wait().await {
-                    Ok(()) => Ok(Value::Void),
-                    Err(r) => Err(RuntimeError::Structured {
-                        kind: r.as_str().into(),
-                        message: format!("signal broken: {}", r.as_str()),
-                        location: m.span,
-                    }),
-                }
-            }
-
-            // ── contract ──────────────────────────────────────────────────────
-            ("fulfill",   Value::Contract(c)) => { c.fulfill(); Ok(Value::Void) }
-            ("isPending", Value::Contract(c)) => Ok(Value::Bool(c.is_pending())),
-            ("isOk",      Value::Contract(c)) => Ok(Value::Bool(c.is_ok())),
-            ("isErr",     Value::Contract(c)) => Ok(Value::Bool(c.is_err())),
-            ("wait",      Value::Contract(c)) => {
-                match c.wait().await {
-                    Ok(()) => Ok(Value::Void),
-                    Err(r) => Err(RuntimeError::Structured {
-                        kind: r.as_str().into(),
-                        message: format!("contract broken: {}", r.as_str()),
-                        location: m.span,
-                    }),
-                }
-            }
-
-            // ── permit ────────────────────────────────────────────────────────
-            ("release", Value::Permit(p)) => {
-                let n = args.into_iter().next();
-                match n {
-                    Some(Value::Int(n)) => {
-                        if n <= 0 {
-                            return Err(RuntimeError::Panic {
-                                message: format!("permit.release(n): n must be positive, got {n}"),
-                                location: m.span,
-                            });
-                        }
-                        p.release_n(n);
-                    }
-                    None => p.release(),
-                    _ => return Err(RuntimeError::Panic {
-                        message: "permit.release(n): n must be an int".into(),
-                        location: m.span,
-                    }),
-                }
-                Ok(Value::Void)
-            }
-            ("count",   Value::Permit(p)) => Ok(Value::Int(p.count())),
-            ("isOk",   Value::Permit(p)) => Ok(Value::Bool(p.is_ok())),
-            ("isErr",  Value::Permit(p)) => Ok(Value::Bool(p.is_err())),
-            ("wait",   Value::Permit(p)) => {
-                match p.acquire().await {
-                    Ok(()) => Ok(Value::Void),
-                    Err(r) => Err(RuntimeError::Structured {
-                        kind: r.as_str().into(),
-                        message: format!("permit broken: {}", r.as_str()),
-                        location: m.span,
-                    }),
-                }
-            }
-
-            (method, recv) => Err(RuntimeError::Panic {
-                message: format!("no method '{}' on type {}", method, recv.type_name()),
-                location: m.span,
-            }),
-        }
-    }
-
-    /// Returns the current Tessera thread's stable identifier (Arc pointer address).
-    /// Used as owner_id for `locked<T>` explicit locking.
-    fn current_thread_id(&self) -> usize {
-        self.0.current_thread_state.borrow()
-            .as_ref()
-            .map(|arc| Arc::as_ptr(arc) as usize)
-            .unwrap_or(0)
-    }
-
-    // ── Field access (Gap 3e) ─────────────────────────────────────────────────
 
     async fn eval_field_access(&self, f: &FieldAccessExpr) -> Result<Value, RuntimeError> {
         let obj = self.eval_expr(&f.object).await?;
@@ -1324,7 +916,7 @@ impl Interpreter {
             Value::HandlerFuture(hf) => match hf.resolve().await {
                 HandlerResolveResult::Ok(v) => Ok(v),
                 HandlerResolveResult::DispatchFailed(e) => {
-                    let (kind, message) = dispatch_error_to_kind(&e);
+                    let (kind, message) = e.kind_and_message();
                     Err(RuntimeError::Structured { kind, message, location: a.span })
                 }
                 HandlerResolveResult::ExecutionFailed(msg) =>
@@ -1445,6 +1037,15 @@ impl Interpreter {
     }
 
     pub async fn exec_handler_body(&self, handler: &HandlerDef, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        if handler.params.len() != args.len() {
+            return Err(RuntimeError::Panic {
+                message: format!(
+                    "handler '{}' expects {} argument(s), got {}",
+                    handler.name.name, handler.params.len(), args.len(),
+                ),
+                location: handler.span,
+            });
+        }
         self.push_frame(format!("handler {}", handler.name.name), handler.span);
         self.0.env.borrow_mut().push_scope();
         for (param, val) in handler.params.iter().zip(args.into_iter()) {
@@ -1460,166 +1061,5 @@ impl Interpreter {
             Some(v) => Ok(v),
             None => Ok(Value::Void),
         }
-    }
-}
-
-// ── Scope template helpers ────────────────────────────────────────────────────
-
-fn find_scope_hook<'a>(decl: &'a ScopeTemplateDecl, name: &str) -> Option<&'a FuncDef> {
-    for m in &decl.members {
-        match m {
-            ScopeTemplateMember::OnEnter(f) if name == "__on_enter__" => return Some(f),
-            ScopeTemplateMember::OnExit(f)  if name == "__on_exit__"  => return Some(f),
-            _ => {}
-        }
-    }
-    None
-}
-
-pub fn find_thread_hook<'a>(decl: &'a ThreadTemplateDecl, name: &str) -> Option<&'a FuncDef> {
-    for m in &decl.members {
-        match m {
-            ThreadTemplateMember::OnEnter(f)    if name == "__on_enter__"    => return Some(f),
-            ThreadTemplateMember::OnExit(f)     if name == "__on_exit__"     => return Some(f),
-            ThreadTemplateMember::OnTerminate(f) if name == "__on_terminate__" => return Some(f),
-            _ => {}
-        }
-    }
-    None
-}
-
-pub fn find_handler<'a>(decl: &'a ThreadTemplateDecl, name: &str) -> Option<&'a HandlerDef> {
-    for m in &decl.members {
-        if let ThreadTemplateMember::Handler(h) = m {
-            if h.name.name == name { return Some(h); }
-        }
-    }
-    None
-}
-
-// ── Runtime argument type helpers ─────────────────────────────────────────────
-
-/// Check if `val` is compatible with the declared parameter type `te`.
-/// Unknown / unrecognised type annotations are skipped (returns true).
-fn runtime_type_matches(te: &tessera_ast::TypeExpr, val: &Value) -> bool {
-    match te {
-        tessera_ast::TypeExpr::Void  => matches!(val, Value::Void),
-        tessera_ast::TypeExpr::Never => false,
-        tessera_ast::TypeExpr::Named(ident, _) => {
-            let expected = match ident.name.as_str() {
-                "bool"    => "bool",
-                "int"     => "int",
-                "double"  => "double",
-                "char"    => "char",
-                "String"  => "String",
-                "void"    => return matches!(val, Value::Void),
-                "never"   => return false,
-                "List"    => "List",
-                "Map"     => "Map",
-                "Option"  => "Option",
-                "Result"  => "Result",
-                "locked"  => "locked",
-                "Queue"   => "Queue",
-                "signal"  => "signal",
-                "contract" => "contract",
-                "permit"  => "permit",
-                "Future"  => "Future",
-                "HandlerFuture" => "HandlerFuture",
-                "thread"  => "ThreadHandle",
-                _ => return true, // unknown annotation — don't reject
-            };
-            val.type_name() == expected
-        }
-    }
-}
-
-/// Human-readable name for a `TypeExpr`, used in error messages.
-fn type_expr_display(te: &tessera_ast::TypeExpr) -> String {
-    match te {
-        tessera_ast::TypeExpr::Void => "void".to_string(),
-        tessera_ast::TypeExpr::Never => "never".to_string(),
-        tessera_ast::TypeExpr::Named(ident, args) if args.is_empty() => ident.name.clone(),
-        tessera_ast::TypeExpr::Named(ident, args) => {
-            let inner: Vec<String> = args.iter().map(type_expr_display).collect();
-            format!("{}<{}>", ident.name, inner.join(", "))
-        }
-    }
-}
-
-// ── Literal evaluation ────────────────────────────────────────────────────────
-
-fn eval_literal(l: &Literal) -> Value {
-    match &l.kind {
-        LitKind::Bool(b) => Value::Bool(*b),
-        LitKind::Int(i)  => Value::Int(*i as i32),
-        LitKind::Double(f) => Value::Double(*f),
-        LitKind::Char(c)  => Value::Char(*c),
-        LitKind::String(s) => Value::Str(s.clone()),
-        LitKind::None => Value::Option(None),
-    }
-}
-
-fn truthy(v: Value) -> bool {
-    match v {
-        Value::Bool(b)       => b,
-        Value::Int(i)        => i != 0,
-        Value::Option(None)  => false,
-        Value::Option(Some(_)) => true,
-        _ => true,
-    }
-}
-
-fn values_equal(a: &Value, b: &Value) -> bool {
-    match (a, b) {
-        (Value::Bool(a), Value::Bool(b)) => a == b,
-        (Value::Int(a),  Value::Int(b))  => a == b,
-        (Value::Double(a), Value::Double(b)) => a == b,
-        (Value::Char(a), Value::Char(b))  => a == b,
-        (Value::Str(a),  Value::Str(b))   => a == b,
-        (Value::Void,    Value::Void)     => true,
-        (Value::Option(None), Value::Option(None)) => true,
-        // HandlerFuture == Err(v): check if hf is in error state and error message matches
-        (Value::HandlerFuture(hf), Value::Result(Err(e))) |
-        (Value::Result(Err(e)), Value::HandlerFuture(hf)) => {
-            match hf.get_err() {
-                Some(msg) => values_equal(&Value::Str(msg), e),
-                None => false,
-            }
-        }
-        // signal/contract/permit == Err("OwnerGone" | "OwnerCrashed")
-        (Value::Signal(s), Value::Result(Err(e))) |
-        (Value::Result(Err(e)), Value::Signal(s)) => match s.broken_reason() {
-            Some(r) => values_equal(&Value::Str(r.as_str().into()), e),
-            None    => false,
-        },
-        (Value::Contract(c), Value::Result(Err(e))) |
-        (Value::Result(Err(e)), Value::Contract(c)) => match c.broken_reason() {
-            Some(r) => values_equal(&Value::Str(r.as_str().into()), e),
-            None    => false,
-        },
-        (Value::Permit(p), Value::Result(Err(e))) |
-        (Value::Result(Err(e)), Value::Permit(p)) => match p.broken_reason() {
-            Some(r) => values_equal(&Value::Str(r.as_str().into()), e),
-            None    => false,
-        },
-        _ => false,
-    }
-}
-
-pub fn value_to_string(v: &Value) -> String {
-    match v {
-        Value::Bool(b)   => b.to_string(),
-        Value::Int(i)    => i.to_string(),
-        Value::Double(f) => f.to_string(),
-        Value::Char(c)   => c.to_string(),
-        Value::Str(s)    => s.clone(),
-        Value::Void      => "void".into(),
-        Value::Never     => "never".into(),
-        Value::Option(None)    => "None".into(),
-        Value::Option(Some(v)) => format!("Some({})", value_to_string(v)),
-        Value::Result(Ok(v))   => format!("Ok({})", value_to_string(v)),
-        Value::Result(Err(e))  => format!("Err({})", value_to_string(e)),
-        Value::ErrorObj { kind, message } => format!("error({kind}: {message})"),
-        _ => "<complex>".into(),
     }
 }

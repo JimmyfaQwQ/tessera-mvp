@@ -1,3 +1,12 @@
+//! Runtime scope chain for interpreter evaluation.
+//!
+//! This is the value-typed (`Value`) sibling of `tessera_types::env::TypeEnv`,
+//! which is the type-typed scope chain used during type checking. The two are
+//! intentionally not unified: they serve different compilation phases and have
+//! no shared lookup logic — sharing would force one phase to depend on the
+//! other's value type. If a third phase (e.g. a constant folder) ever needs
+//! the same shape, revisit this decision.
+
 use std::collections::HashMap;
 use tessera_runtime::Value;
 

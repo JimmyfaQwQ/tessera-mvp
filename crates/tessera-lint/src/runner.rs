@@ -13,19 +13,7 @@ pub struct LintRunner {
 
 impl LintRunner {
     pub fn default_passes() -> Self {
-        Self {
-            passes: vec![
-                Box::new(passes::AwaitAsyncOnly),
-                Box::new(passes::HandlerMustAsync),
-                Box::new(passes::HandlerAwaitType),
-                Box::new(passes::ExposeMutableUnsafe),
-                Box::new(passes::GenericTypeArgMissing),
-                Box::new(passes::TerminateNonTerminatable),
-                Box::new(passes::PermitAwaitInSync),
-                Box::new(passes::PermitWaitInAsync),
-                Box::new(passes::PermitReleaseNonPositive),
-            ],
-        }
+        Self { passes: passes::all() }
     }
 
     pub fn run_all(&mut self, program: &Program, env: &TypeEnv) -> Vec<Diagnostic> {

@@ -366,6 +366,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)] // 3.14 is just a parseable double, not PI
     fn literals() {
         assert_eq!(single("42"), Token::LitInt(42));
         assert_eq!(single("3.14"), Token::LitDouble(3.14));

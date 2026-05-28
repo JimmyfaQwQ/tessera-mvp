@@ -29,11 +29,6 @@ impl Parser {
         self.tokens.get(self.pos).map(|s| &s.node)
     }
 
-    #[allow(dead_code)]
-    fn peek2(&self) -> Option<&Token> {
-        self.tokens.get(self.pos + 1).map(|s| &s.node)
-    }
-
     fn current_span(&self) -> Span {
         match self.tokens.get(self.pos) {
             Some(s) => s.span,
@@ -628,16 +623,22 @@ impl Parser {
 
     fn parse_scope_block_stmt(&mut self) -> ScopeBlockStmt {
         let start = self.current_span();
+        // `(args)` is optional for zero-arg scope templates so that
+        // `@Name { body }` parses without producing spurious errors when the
+        // template declares no parameters.
+        let parse_optional_args = |p: &mut Self| -> Vec<Expr> {
+            if matches!(p.peek(), Some(Token::ParenOpen)) { p.parse_call_args() } else { Vec::new() }
+        };
         let (template, args) = match self.peek().cloned() {
             Some(Token::KwAtTemplate) => {
                 let decl = self.parse_scope_template_decl();
-                let args = self.parse_call_args();
+                let args = parse_optional_args(self);
                 (ScopeTemplateRef::Anonymous(Box::new(decl)), args)
             }
             Some(Token::At) => {
                 self.advance();
                 let name = self.expect_ident();
-                let args = self.parse_call_args();
+                let args = parse_optional_args(self);
                 (ScopeTemplateRef::Named(name), args)
             }
             _ => {

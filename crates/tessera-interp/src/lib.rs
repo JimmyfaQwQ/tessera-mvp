@@ -1,3 +1,26 @@
+//! Tessera interpreter.
+//!
+//! # Single-threaded execution model
+//!
+//! The interpreter is intentionally **not `Send`**. All evaluation runs inside a
+//! single `tokio::task::LocalSet` on one OS thread (see [`run_reported`]). This
+//! lets `InterpState` use cheap `Rc<RefCell<…>>` for shared mutable state across
+//! Tessera threads and mini-threads — cooperative scheduling within the
+//! `LocalSet` guarantees no concurrent borrows.
+//!
+//! Consequences:
+//!
+//! - Tessera concurrency is cooperative, not parallel. Two Tessera threads will
+//!   not run on two OS threads.
+//! - `Arc<Mutex<…>>` appears in some runtime primitives so that the trait
+//!   `BreakablePrimitive: Send + Sync` is satisfiable, even though the values
+//!   never actually cross OS-thread boundaries at runtime. The clippy lint
+//!   `arc_with_non_send_sync` is silenced at the construction sites.
+//! - Embedders must not try to share an [`Interpreter`] across OS threads.
+
+// Justified by the single-threaded invariant documented above: the lint flags
+// `Arc<Mutex<NotSendSync>>` constructions in `tessera_runtime` that the runtime
+// only ever shares within one `LocalSet`.
 #![allow(clippy::arc_with_non_send_sync)]
 
 mod env;

@@ -1,9 +1,7 @@
-#![allow(dead_code, unused_assignments)]
 use miette::{Diagnostic, LabeledSpan};
 use tessera_ast::Span;
 use thiserror::Error;
 
-#[allow(unused)]
 #[derive(Debug, Clone, Error, Diagnostic)]
 #[error("{message}")]
 #[diagnostic(code(tessera::parse))]
