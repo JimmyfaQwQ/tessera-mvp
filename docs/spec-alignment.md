@@ -10,6 +10,26 @@
 > - ❌ 完全未实现
 > - 🔶 实现与规范存在语义偏差，需修复或修订规范
 
+## 后续立项 Round 2（方向 1 承接）：L-EXCL-AWAIT —— R-EXCL-4 的 sound 子集（commit `ae00ba2` / `b5d93ff` 之后）
+
+> 起点：Round 1 收尾时挂账的 Round 2 候选——实现 R-EXCL-4（《线程与事件循环规范 §4.5》告知性约束）的可静态命中子集。
+
+**审计结论**：R-EXCL-4 的完整死锁判定不可静态判定（"await 是否依赖本线程调度"通常跨函数）。原拟的"await 自身 handler"子集**不可表达**——`self` 在类型系统里是 `Type::TemplateObject`（非 `ThreadHandle`），线程拿不到指向自身的句柄；而 `await 其他线程的 handler/原语` 在 `#exclusive` 内是**合法**的（由那个线程驱动，R-EXCL-4 明确祝福），不应报警。真正 sound 且可命中的子集是**同步原语**：原语的设计是"owner 驱动（raise/fulfill/release）、他人 await"，故 owner 在 `#exclusive` 内 `await`/`.wait()` 自己拥有的原语必然死锁（owner 被自己卡住，无法再驱动）。
+
+**裁决 B（sound Warn）：**
+
+| 工作项 | 状态 | 关键改动 |
+|---|---|---|
+| 新增 lint pass `L-EXCL-AWAIT`（Warn） | ✅ | `passes/exclusive_self_primitive_await.rs`：跟踪当前模板自有 signal/contract/permit 字段（expose/expose_mutable/define）+ `#exclusive` 深度；命中 `#exclusive` 内 `await self.<prim>` 或 `self.<prim>.wait()`。spawn body 用空上下文（不同 `self`，不同线程）→ sound 地不误报。注册于 `passes/mod.rs::all()`（20 → 21）。 |
+| 规范锚定 R-EXCL-4 | ✅ | `线程与事件循环规范.md §4.5` 在 R-EXCL-4 后补 *Lint 锚定* 段，说明 sound 子集与权威源文件。 |
+| 测试守护 | ✅ | `lint_smoke.rs` 新增 4 例：await/`.wait()` 自有原语 + `#exclusive` → 命中；自有原语在 `#exclusive` 外 → 不命中；`await self.o.sig`（他线程原语）在 `#exclusive` 内 → 不命中。 |
+
+**已知范围限制**（sound，非 bug）：仅覆盖**线程模板成员**（handler / member func / hook）内的 `self.<prim>`；线程主体在 spawn 处（`$T(){...}` 的 body）的 `self` 绑定在 spawn 站点，未覆盖（罕见，可后续扩展）。别名（`let s = self.sig; #exclusive { await s }`）不追踪。
+
+**测试规模**：tessera-lint smoke 24 → **28**；其余不变（interp 37、parser 5、lexer 5）。Lint pass 20 → **21**。`cargo build --workspace --all-targets` 无 warning；`--check helloworld.tss`（含 `#exclusive` 但仅对自有 permit 调 `release()`，非 await/wait）/ `demo.tss` 均无诊断。
+
+---
+
 ## 后续立项 Round 1（方向 1）：R-SYNC-BREAK-3 净简化（commit `0290978` 之后）
 
 > 起点：spec-alignment 四轮收尾后剩余的深度设计性方向之一（方向 1）。
@@ -299,7 +319,7 @@ cargo build --workspace 与 cargo test --workspace 全部通过；`tessera-cli -
 | R-EXCL-1 | `#exclusive` 内独占线程；handler/timer/IO 不交错 | ✅ | `event_loop.rs:300 + 345-350`（select gate + handler 任务 watch 等待）| `exclusive_block.tss` 覆盖 |
 | R-EXCL-2 | `#exclusive` 阻塞 handler 进入，但不阻塞入队 | ✅ | mpsc 通道一直接收；只在主 select 上 gate | |
 | R-EXCL-3 | 在 `#exclusive` 期间收到 terminate → 立即转 Terminating，teardown 延后 | ✅ | `event_loop.rs:157-184, 199-223, 270-294` | 代码注释明确引用 R-EXCL-3 |
-| R-EXCL-4 | `#exclusive` 内 await 依赖外部 handler → 死锁警告 | ❌ | 无 Linter pass；运行时无死锁检测 | 静态分析缺失 |
+| R-EXCL-4 | `#exclusive` 内 await 依赖本线程调度 → 死锁（告知性约束） | ✅（sound 子集） | `tessera-lint/src/passes/exclusive_self_primitive_await.rs`（L-EXCL-AWAIT, Warn）命中 `#exclusive` 内 await/`.wait()` 自有同步原语 | 后续立项 Round 2 完成；完整判定不可静态化，仅落地 sound 子集 |
 | R-KEEPALIVE-1 | `keepalive()` 返回永不完成 Future | ⚠️ | `crates/tessera-interp/src/eval/builtin.rs`、`eval.rs` 中实现并返回挂起 Future | 需复核 await 后是否真正不返回；缺独立测试 |
 | R-KEEPALIVE-2 | `keepalive()` 主体不参与 terminate；terminate 由 hook 驱动 | ✅ | `event_loop.rs:226+` 主体即使永远不返回，terminate 通过 select 路径触发 teardown | `handler_dispatch.tss` 使用 keepalive 隐含覆盖 |
 
@@ -453,9 +473,9 @@ cargo build --workspace 与 cargo test --workspace 全部通过；`tessera-cli -
 
 ## 12. Linter 规则对照
 
-实现注册在 `crates/tessera-lint/src/passes/mod.rs::all()`，当前共 9 个 pass。
+实现注册在 `crates/tessera-lint/src/passes/mod.rs::all()`，当前共 **21** 个 pass（权威列表以 `mod.rs::all()` 为准；下表为初始审计的 9 条 + 各轮增量，后续增量见各轮小结）。
 
-### 已实现（9）
+### 已实现（初始 9 条 + 增量）
 
 | 规则 ID | 文件 | 检查内容 | 状态 |
 |---|---|---|---|
@@ -468,6 +488,7 @@ cargo build --workspace 与 cargo test --workspace 全部通过；`tessera-cli -
 | L-PERMIT-AWAIT-IN-SYNC | `passes/permit_await_in_sync.rs` | sync 上下文中不可 `.awaitPermit()` | ✅ |
 | L-PERMIT-WAIT-IN-ASYNC | `passes/permit_wait_in_async.rs` | async 上下文中用 `.wait()` 警告 | ✅ |
 | L-PERMIT-RELEASE-NON-POSITIVE | `passes/permit_release_non_positive.rs` | `permit(initial)` ≥ 0，`release(n)` > 0 | ✅ |
+| L-EXCL-AWAIT（Round 2）| `passes/exclusive_self_primitive_await.rs` | `#exclusive` 内 await/`.wait()` 自有同步原语（R-EXCL-4 sound 子集）| ✅ Warn |
 
 ### 未实现（按规范 `Linter 规则草案.md` 列举）
 

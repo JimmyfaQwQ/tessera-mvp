@@ -11,6 +11,7 @@ mod await_async_only;
 mod contract_await_in_sync;
 mod contract_wait_in_async;
 mod define_external_access;
+mod exclusive_self_primitive_await;
 mod expose_mutable_unsafe;
 mod expose_readonly_write;
 mod generic_type_arg_missing;
@@ -32,6 +33,7 @@ pub use await_async_only::AwaitAsyncOnly;
 pub use contract_await_in_sync::ContractAwaitInSync;
 pub use contract_wait_in_async::ContractWaitInAsync;
 pub use define_external_access::DefineExternalAccess;
+pub use exclusive_self_primitive_await::ExclusiveSelfPrimitiveAwait;
 pub use expose_mutable_unsafe::ExposeMutableUnsafe;
 pub use expose_readonly_write::ExposeReadonlyWrite;
 pub use generic_type_arg_missing::GenericTypeArgMissing;
@@ -60,6 +62,7 @@ pub(crate) fn all() -> Vec<Box<dyn LintPass>> {
         Box::new(ExposeMutableUnsafe),
         Box::new(ExposeReadonlyWrite),
         Box::new(DefineExternalAccess),
+        Box::new(ExclusiveSelfPrimitiveAwait),
         Box::new(GenericTypeArgMissing),
         Box::new(TerminateNonTerminatable),
         Box::new(PermitAwaitInSync),

@@ -331,3 +331,76 @@ fn field_chain_handler_call_is_warned() {
     "#);
     assert!(has_rule(&diags, "L-HANDLER-RESULT-IGNORED"));
 }
+
+// ── L-EXCL-AWAIT ─────────────────────────────────────────────────────────────
+
+#[test]
+fn await_self_owned_signal_in_exclusive_is_warned() {
+    let diags = run_lints(r#"
+        $template Owner() {
+            expose sig: signal;
+            function __on_enter__(): void { self.sig = signal(); }
+            async function __on_terminate__(): void {}
+            async function loopit(): void {
+                #exclusive {
+                    await self.sig;
+                }
+            }
+        }
+    "#);
+    assert!(has_rule(&diags, "L-EXCL-AWAIT"));
+}
+
+#[test]
+fn wait_self_owned_permit_in_exclusive_is_warned() {
+    let diags = run_lints(r#"
+        $template Owner() {
+            expose gate: permit;
+            function __on_enter__(): void { self.gate = permit(0); }
+            async function __on_terminate__(): void {}
+            async function loopit(): void {
+                #exclusive {
+                    self.gate.wait();
+                }
+            }
+        }
+    "#);
+    assert!(has_rule(&diags, "L-EXCL-AWAIT"));
+}
+
+#[test]
+fn await_self_owned_signal_outside_exclusive_is_ok() {
+    let diags = run_lints(r#"
+        $template Owner() {
+            expose sig: signal;
+            function __on_enter__(): void { self.sig = signal(); }
+            async function __on_terminate__(): void {}
+            async function loopit(): void {
+                await self.sig;
+            }
+        }
+    "#);
+    assert!(!has_rule(&diags, "L-EXCL-AWAIT"));
+}
+
+#[test]
+fn await_other_threads_primitive_in_exclusive_is_ok() {
+    // `self.o.sig` is another thread's primitive — R-EXCL-4 blesses it (that
+    // thread drives it). The pass must not fire.
+    let diags = run_lints(r#"
+        $template Owner() {
+            expose sig: signal;
+            function __on_enter__(): void { self.sig = signal(); }
+            async function __on_terminate__(): void {}
+        }
+        $template Waiter(o: thread<Owner>) {
+            async function __on_terminate__(): void {}
+            async function run(): void {
+                #exclusive {
+                    await self.o.sig;
+                }
+            }
+        }
+    "#);
+    assert!(!has_rule(&diags, "L-EXCL-AWAIT"));
+}
