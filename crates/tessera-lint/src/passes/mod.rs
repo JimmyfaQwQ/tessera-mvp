@@ -8,6 +8,7 @@ mod helpers;
 mod scoped_visitor;
 
 mod await_async_only;
+mod break_continue_outside_loop;
 mod contract_await_in_sync;
 mod contract_wait_in_async;
 mod define_external_access;
@@ -33,6 +34,7 @@ mod toplevel_control_flow;
 mod void_return_value;
 
 pub use await_async_only::AwaitAsyncOnly;
+pub use break_continue_outside_loop::BreakContinueOutsideLoop;
 pub use contract_await_in_sync::ContractAwaitInSync;
 pub use contract_wait_in_async::ContractWaitInAsync;
 pub use define_external_access::DefineExternalAccess;
@@ -78,6 +80,7 @@ pub(crate) fn all() -> Vec<Box<dyn LintPass>> {
         Box::new(ContractAwaitInSync),
         Box::new(ContractWaitInAsync),
         Box::new(ToplevelControlFlow),
+        Box::new(BreakContinueOutsideLoop),
         Box::new(HookSignature),
         Box::new(HandlerResultIgnored),
         Box::new(HandlerPingRedefined),

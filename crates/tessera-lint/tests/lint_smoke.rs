@@ -494,3 +494,54 @@ fn shallow_generic_is_ok() {
     let diags = run_lints("function f(x: List<List<int>>): void {}");
     assert!(!has_rule(&diags, "L-GENERIC-NESTING-DEPTH"));
 }
+
+// ── L-CONTROL-OUTSIDE-LOOP ───────────────────────────────────────────────────
+
+#[test]
+fn break_in_function_outside_loop_is_rejected() {
+    let diags = run_lints("function f(): void { break; }");
+    assert!(has_rule(&diags, "L-CONTROL-OUTSIDE-LOOP"));
+}
+
+#[test]
+fn continue_at_top_level_is_rejected() {
+    let diags = run_lints("continue;");
+    assert!(has_rule(&diags, "L-CONTROL-OUTSIDE-LOOP"));
+}
+
+#[test]
+fn break_inside_loop_in_function_is_ok() {
+    let diags = run_lints("function f(): void { while (true) { if (true) { break; } } }");
+    assert!(!has_rule(&diags, "L-CONTROL-OUTSIDE-LOOP"));
+}
+
+#[test]
+fn break_in_handler_outside_loop_is_rejected() {
+    let diags = run_lints(r#"
+        $template W() {
+            async function __on_terminate__(): void {}
+            async handler h(): void { break; }
+        }
+    "#);
+    assert!(has_rule(&diags, "L-CONTROL-OUTSIDE-LOOP"));
+}
+
+// ── L-VOID-RETURN-VALUE: thread body is void-like ────────────────────────────
+
+#[test]
+fn return_value_from_thread_body_is_rejected() {
+    let diags = run_lints(r#"
+        $template W() { async function __on_terminate__(): void {} }
+        $W() { return 5; } := h;
+    "#);
+    assert!(has_rule(&diags, "L-VOID-RETURN-VALUE"));
+}
+
+#[test]
+fn bare_return_in_thread_body_is_ok() {
+    let diags = run_lints(r#"
+        $template W() { async function __on_terminate__(): void {} }
+        $W() { return; } := h;
+    "#);
+    assert!(!has_rule(&diags, "L-VOID-RETURN-VALUE"));
+}
