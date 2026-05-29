@@ -926,13 +926,14 @@ impl Interpreter {
                         location: a.span,
                     }),
             },
-            // `await s` — panics if signal is broken (R-SYNC-BREAK-3: defer
-            // broken delivery until #exclusive ends if we're inside one).
+            // `await s` — panics if signal is broken. The Broken wakeup resumes
+            // this exclusive coroutine's own continuation (R-SYNC-BREAK-3); per
+            // R-EXCL-1 no foreign task interleaves, so atomicity holds without
+            // deferring delivery.
             Value::Signal(s) => {
                 match s.wait().await {
                     Ok(()) => Ok(Value::Void),
                     Err(r) => {
-                        self.delay_broken_until_exclusive_ends().await;
                         Err(RuntimeError::Structured {
                             kind: r.as_str().into(),
                             message: format!("signal broken: {}", r.as_str()),
@@ -946,7 +947,6 @@ impl Interpreter {
                 match c.wait().await {
                     Ok(()) => Ok(Value::Void),
                     Err(r) => {
-                        self.delay_broken_until_exclusive_ends().await;
                         Err(RuntimeError::Structured {
                             kind: r.as_str().into(),
                             message: format!("contract broken: {}", r.as_str()),
@@ -960,7 +960,6 @@ impl Interpreter {
                 match p.acquire().await {
                     Ok(()) => Ok(Value::Void),
                     Err(r) => {
-                        self.delay_broken_until_exclusive_ends().await;
                         Err(RuntimeError::Structured {
                             kind: r.as_str().into(),
                             message: format!("permit broken: {}", r.as_str()),

@@ -210,6 +210,14 @@ async fn test_exclusive_broken_wait() {
     assert_runs_ok!(&src);
 }
 
+// R-SYNC-BREAK-3 clause 2: an in-`#exclusive` success is not reverted by a
+// later Broken transition of the same primitive.
+#[tokio::test]
+async fn test_exclusive_broken_success_not_reverted() {
+    let src = tss("exclusive_broken_success_not_reverted");
+    assert_runs_ok!(&src);
+}
+
 // ── Inline expression tests ───────────────────────────────────────────────────
 
 #[tokio::test]

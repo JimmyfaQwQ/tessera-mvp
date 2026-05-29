@@ -10,6 +10,26 @@
 > - ❌ 完全未实现
 > - 🔶 实现与规范存在语义偏差，需修复或修订规范
 
+## 后续立项 Round 1（方向 1）：R-SYNC-BREAK-3 净简化（commit `0290978` 之后）
+
+> 起点：spec-alignment 四轮收尾后剩余的深度设计性方向之一（方向 1）。
+
+**审计结论**：R-SYNC-BREAK-3 第一句"`Broken` 唤醒不早于 `#exclusive` 块结束"在协作单线程下既**不可实现**（当 wait 是块内唯一挂起源时死锁），又**冗余**——`#exclusive` 原子性已由 R-EXCL-1 保证（块内不调度任何外部任务），而 Broken 唤醒只是让块内 `await`/`.wait()` 以失败恢复，这是该独占协程**自身的续体**，并非被插入的外部任务，因此不破坏原子性。规范 §4.1/4.2/4.5 明确**允许** `#exclusive` 内 await（它是"跨 await 点的原子调度区"，非同步区），故该子句应删除而非加禁止性 lint。
+
+**裁决 P1（保留现设计 + 净简化）：**
+
+| 工作项 | 状态 | 关键改动 |
+|---|---|---|
+| 删除 best-effort 拐杖 | ✅ | `eval/builtin.rs::delay_broken_until_exclusive_ends`（30 行）删除；6 个调用点（`eval.rs` await 3 处 + `builtin.rs` `.wait()` 3 处）改为即时交付 Broken |
+| 规范删冗余子句 | ✅ | `同步原语与崩溃传播规范草案.md §3.3` 删去"延迟到块结束"；R-SYNC-BREAK-3 重写 Rationale（原子性由 R-EXCL-1 成立、与 R-EXCL-4 衔接）；§6 总览同步 |
+| 测试守护 | ✅ | `exclusive_broken_wait.tss` 注释更新为 P1 语义；新增 `exclusive_broken_success_not_reverted.tss` 锚定 clause 2（raised+broken 的 signal `wait()` 仍返回 Ok，不被回溯）+ integration 新 case |
+
+**Round 2 候选（同主题承接）**：`L-EXCL-AWAIT` —— 实现 R-EXCL-4（《线程与事件循环规范 §4.5》告知性约束）的可静态命中子集（`#exclusive` 内 `await` 一个 self-handler 调用 → 必然死锁，Warn 级）。规范侧把 R-EXCL-4 补一条可锚定 lint 引用。
+
+**测试规模**：tessera-interp integration 36 → **37**；其余不变（lint smoke 24、parser 5、lexer 5）。`cargo build --workspace --all-targets` 无 warning；`--check helloworld.tss` / `demo.tss` 均无诊断。
+
+---
+
 ## 第四轮（收尾轮）修复总结（commit `9542616` 之后）
 
 | 工作项 | 状态 | 关键改动 |
@@ -343,7 +363,7 @@ cargo build --workspace 与 cargo test --workspace 全部通过；`tessera-cli -
 | R-SYNC-OWN-3 | @template `define` 的原语 = 作用域绑定，不随线程传递 | ✅ | `signal.rs:13-16`（`ScopeGone`/`ScopeCrashed` 变体） + 触发于 scope 退出路径 | `scope_binding.tss` 覆盖 ScopeGone |
 | R-SYNC-BREAK-1 | 线程绑定 → 仅在 owner 进入 `Terminated`/`Crashed` 时 Broken；`Terminating` 不触发 | ✅ | `thread_state.rs:111-127`：`set_status(Terminated/Crashed)` 才 `break_with` | |
 | R-SYNC-BREAK-2 | owner 在 terminate 之前崩溃 → 已经 Broken | ✅ | 同上；Crashed 路径覆盖 | |
-| R-SYNC-BREAK-3 | `Broken` 唤醒不早于当前 `#exclusive` 结束 | ⚠️ | 实现未显式延后 `notify_waiters`；但 thread 状态切换由 event_loop 在 select 中执行，`#exclusive` 内不会切换状态 | 间接成立但缺反例测试 |
+| R-SYNC-BREAK-3 | `Broken` 唤醒处于 `#exclusive` 中的等待者 = 恢复独占协程自身续体（R-EXCL-1 保证原子性，无需延迟交付）；块内已成功的等待不被回溯 | ✅ | Broken 即时交付（`eval.rs`/`builtin.rs` 的 signal/contract/permit 分支）；规范 §3.3 删去"延迟到块结束"冗余子句，删除 best-effort 拐杖 `delay_broken_until_exclusive_ends` | 后续立项 Round 1 完成；测试 `exclusive_broken_wait.tss` + `exclusive_broken_success_not_reverted.tss` |
 | R-SYNC-BREAK-4 | scope 绑定 → `__on_exit__` 返回后 `ScopeGone`；中途崩溃 `ScopeCrashed` | ✅ | scope 执行路径在 `eval.rs::exec_scope_block` 处理 | `scope_binding.tss` 覆盖 |
 | R-SYNC-WAKE-1 | Broken 必须有限步唤醒所有 waiter | ✅ | `signal.rs:175`、`signal.rs:277`（`notify_waiters`）；permit 用 `Semaphore::close()` | |
 | R-SYNC-AWAIT-1 | `Broken` 完成 `.wait()`/`await` 触发崩溃 | ✅ | `builtin.rs:268-277, 284-293, 319-328` 转为 `RuntimeError::Structured` | |
@@ -552,7 +572,7 @@ cargo build --workspace 与 cargo test --workspace 全部通过；`tessera-cli -
 8. **handler 结果丢弃语义**：L-HANDLER-RESULT-IGNORED + L-HANDLER-DISPATCH-ERROR-UNHANDLED；
 9. **HandlerFuture 误用**：L-HANDLER-FUTURE-MISUSE 扩展 `handler_await_type` 覆盖 field/method-chain 接收者；
 10. **匿名 `${...}` 测试覆盖**：补 `tests/tss/anonymous_thread.tss`；
-11. **Broken 唤醒不早于 #exclusive 结束**（R-SYNC-BREAK-3）：补反例测试；
+11. ~~**Broken 唤醒不早于 #exclusive 结束**（R-SYNC-BREAK-3）：补反例测试；~~ **已解决（后续立项 Round 1）**——经裁决 P1，该子句既不可实现又冗余（`#exclusive` 原子性由 R-EXCL-1 保证，Broken 唤醒是独占协程自身续体），已从规范删除并删掉 best-effort 拐杖；改以 clause 2（成功不被回溯）建测试。
 12. **char Unicode 转义 `\u{xxxx}`**：扩展 `lexer/src/token.rs::unescape`；
 13. **String `[i]` 取字符**：扩展 `eval.rs::Expr::Index` 与 checker。
 

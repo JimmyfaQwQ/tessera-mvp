@@ -1,0 +1,52 @@
+// R-SYNC-BREAK-3 (clause 2): inside `#exclusive`, a wait whose success
+// condition already holds is NOT retroactively reverted by the primitive being
+// Broken. At the primitive level `wait()` consumes the raised/pending state
+// before testing `broken`, so a signal that is BOTH raised AND broken still
+// resolves Ok.
+//
+// Here the owner raises its signal, then terminates — leaving the signal in the
+// raised+broken state. A waiter awaiting it inside `#exclusive` must observe Ok
+// (raised wins), demonstrating that Broken does not revert an available wait.
+
+$template Owner() {
+    expose sig: signal;
+    function __on_enter__(): void {
+        self.sig = signal();
+        self.sig.raise();
+    }
+    async function __on_terminate__(): void {}
+}
+
+$template Waiter(o: thread<Owner>) {
+    expose_mutable log: Queue<String>;
+    function __on_enter__(): void { self.log = Queue<String>(); }
+    async function __on_terminate__(): void {}
+
+    async function run(): void {
+        #exclusive {
+            // sig is raised AND broken (owner already terminated). `wait()`
+            // consumes the raised state before checking broken → Ok.
+            let r: Result<void, error> = try await self.o.sig;
+            assert(r.isOk());
+            self.log.push("raised_wins");
+        }
+        self.log.push("outside_exclusive");
+    }
+}
+
+// Raise-then-terminate the owner BEFORE spawning the waiter, so by the time the
+// waiter awaits, the signal is already in the raised+broken state.
+$Owner() { await keepalive(); } := owner;
+owner.terminate().wait();
+
+$Waiter(owner) { await run(); } := waiter;
+
+asleep(100);
+
+assert(waiter.log.size() == 2);
+let s0: String = waiter.log.tryPop().unwrap();
+let s1: String = waiter.log.tryPop().unwrap();
+assert(s0 == "raised_wins");
+assert(s1 == "outside_exclusive");
+
+waiter.terminate().wait();

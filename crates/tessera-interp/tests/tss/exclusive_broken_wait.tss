@@ -1,12 +1,12 @@
-// R-SYNC-BREAK-3 (best-effort): a Broken wakeup inside `#exclusive` must not
-// deadlock. The current implementation delivers Broken after a few cooperative
-// yields rather than indefinitely (the genuinely "delay until #exclusive
-// ends" reading is unimplementable when the wait is the sole suspension
-// source — see eval/builtin.rs::delay_broken_until_exclusive_ends).
+// R-SYNC-BREAK-3: a Broken wakeup inside `#exclusive` resumes the exclusive
+// coroutine's own continuation — it is not a foreign task interleaving, so
+// per R-EXCL-1 the block stays atomic and Broken is delivered immediately
+// (no defer-until-block-end). The cross-thread Broken here is driven by the
+// owner thread's termination, which R-EXCL-4 explicitly blesses.
 //
-// This test pins down the no-deadlock property: a `try await` on a signal
-// whose owner has already terminated must complete inside `#exclusive`, the
-// post-await statement must run, and the block must exit normally.
+// This test pins down the no-deadlock + atomicity property: a `try await` on
+// a signal whose owner has already terminated completes inside `#exclusive`,
+// the post-await statement runs, and the block exits normally.
 
 $template Owner() {
     expose sig: signal;

@@ -45,6 +45,13 @@
 | E-5 文档顶部总览 | ✅ 已修订（第四轮） | `Tessera-Spec/README.md` §文档顶部总览（约定，按需迁移） |
 | E-6 跨文档锚点 | ✅ 已修订（第四轮） | `Tessera-Spec/README.md` §跨文档锚点；CI 校验为后续工作 |
 
+## 后续立项 Round 1（方向 1）：R-SYNC-BREAK-3 净简化
+
+| 条目 | 状态 | 修订位置 |
+|---|---|---|
+| R-SYNC-BREAK-3 第一句删除 | ✅ 已修订 | `同步原语与崩溃传播规范草案.md §3.3` + §6 总览：删去"`Broken` 唤醒不早于 `#exclusive` 块结束"（不可实现 + 冗余）；Rationale 重写为"原子性由 R-EXCL-1 成立、与 R-EXCL-4 衔接"。实现侧删除 best-effort 拐杖 `delay_broken_until_exclusive_ends`。详见 `spec-alignment.md` 顶部本轮小结。 |
+| R-EXCL-4 lint（L-EXCL-AWAIT） | 🔵 Round 2 候选 | `线程与事件循环规范.md §4.5` 的 R-EXCL-4 目前为纯散文"告知性约束"，无可锚定 lint；Round 2 实现其可静态命中子集（`#exclusive` 内 await self-handler，Warn）并补规范引用。 |
+
 ## 目录
 
 - A. [内部矛盾](#a-内部矛盾)
