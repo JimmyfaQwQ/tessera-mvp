@@ -1,12 +1,12 @@
 # Tessera Spec Alignment 报告
 
-> **当前基准**：tessera-mvp 方向 1 Round 3 / Tessera-Spec `6c8548a`（2026-05-29）。`E:/tessera-mvp/` 实现 vs `E:/Tessera-Spec/` 规范的逐条对照。
+> **当前基准**：tessera-mvp 方向 1 Round 4 / Tessera-Spec `41ae1c4`（2026-05-29）。`E:/tessera-mvp/` 实现 vs `E:/Tessera-Spec/` 规范的逐条对照。
 > 覆盖：tessera-lexer / tessera-parser / tessera-ast / tessera-types / tessera-runtime / tessera-interp / tessera-lint。
-> 测试：tessera-interp 44 integration + tessera-lint 41 smoke + tessera-types 5 typecheck + parser/lexer 各 5（合计 100）；Lint pass 25。`cargo build --workspace --all-targets` 无 warning；`--check helloworld.tss` / `demo.tss` 均无诊断。
+> 测试：tessera-interp 47 integration + tessera-lint 59 smoke + tessera-types 9 typecheck + parser/lexer 各 5（合计 125）；Lint pass 29。`cargo build --workspace --all-targets` 无 warning；`--check helloworld.tss` / `demo.tss` 均无诊断。
 >
 > **状态徽标**：✅ 已实现且有测试 ／ ⚠️ 已实现但缺测试或行为未完全覆盖 ／ ❌ 未实现 ／ 🔶 实现与规范存在语义偏差。
 >
-> 本文档只反映**当前最终状态**。逐轮修复脉络（4 轮 spec-alignment + 方向 1 的 Round 1「R-SYNC-BREAK-3 净简化」/ Round 2「L-EXCL-AWAIT」/ Round 3「对齐补全：4 lint + 重复声明拒绝 + 测试缺口」）保存在 git 历史中。
+> 本文档只反映**当前最终状态**。逐轮修复脉络（4 轮 spec-alignment + 方向 1 的 Round 1「R-SYNC-BREAK-3 净简化」/ Round 2「L-EXCL-AWAIT」/ Round 3「4 lint + 重复声明拒绝 + 测试缺口」/ Round 4「规则 refinement：删 panic-overuse、break/continue 越界、thread-body void-like return、参数/字段重名、模板 arity、assert 常量折叠、未消费/terminate Future、自由函数体检查、补齐 R-TRY-2/R-HANDLER-SCOPE/ParseError 测试」）保存在 git 历史中。
 
 ## 目录
 
@@ -36,11 +36,11 @@
 
 | 维度 | 当前状态 | 仍开放的主要短板 |
 |---|---|---|
-| 解释器（lexer + parser + ast + runtime + interp） | 高度对齐 | `keepalive()` 永不返回语义缺独立验证测试；List/Map 跨线程使用缺领域级诊断（§14） |
-| 类型系统（tessera-types） | 大体对齐 | **用户函数泛型未实现**（`function f<T>(...)`，§11）；顶层自由函数体不参与类型检查（pre-existing gap，见 §10 注） |
-| Linter（tessera-lint） | 25 个 pass | 剩余未实现的 L 规则多需数据流分析（option/result unwrap、L-AWAIT-UNCONSUMED-FUTURE 等）或语义上不可 sound 静态化（详见 §12 未实现表的逐条原因）|
+| 解释器（lexer + parser + ast + runtime + interp） | 高度对齐 | List/Map 跨线程使用缺领域级错误信息（§14 偏差 1，需 runtime 改造）|
+| 类型系统（tessera-types） | 大体对齐 | **用户函数泛型未实现**（`function f<T>(...)`，§11）。自由函数体类型检查、模板参数/字段重名已在 Round 4 补齐 |
+| Linter（tessera-lint） | 29 个 pass | 剩余未实现的 L 规则需数据流/CFG 分析（option/result unwrap 可空性等）或前提不成立（no-await 系）——已在 §12 逐条记录处置 |
 
-> 说明：spec-alignment 四轮 + 方向 1 Round 1/2/3 已落地全部 P0、绝大多数 P1，以及标准库 13 方法、4 类同步原语上下文 lint、`#exclusive`/同步原语相关规则、Round 3 的 5 条可 sound lint（return-type / void-return / expose 只读容器 / 泛型嵌套深度 / panic 滥用）+ 同块重复声明拒绝 + 补齐的测试缺口、并删除空占位 pass L-HANDLER-MUST-ASYNC（语法层强制）。§1–§13 各表已逐行更新到当前状态。
+> 说明：spec-alignment 四轮 + 方向 1 Round 1/2/3/4 已落地全部 P0、绝大多数 P1。Round 4 按"wildcard 规则需 refinement"原则：删除纯计数的 L-PANIC-OVERUSE；新增 L-CONTROL-OUTSIDE-LOOP、L-AT-TEMPLATE-PARAM-MISMATCH、L-ASSERT-ALWAYS-TRUE/FALSE、L-AWAIT-UNCONSUMED-FUTURE、L-TERMINATE-FUTURE-IGNORED；thread-body return 改为 void-like；补齐参数/字段重名拒绝、自由函数体类型检查、R-TRY-2/R-HANDLER-SCOPE/ParseError 测试。§1–§13 各表已逐行更新到当前状态。
 
 
 ## 1. Tessera 核心语义
@@ -69,7 +69,7 @@
 | 线程模板成员：`expose` / `expose_mutable` / `define` / `async handler` / 三个生命周期 hooks / 普通 method | 全部支持 | ✅ | `parser.rs:270-360`、`ast/src/lib.rs`（ThreadTemplateMember） | 句法/AST 完整 |
 | Scope 模板成员：`define` + `__on_enter__` / `__on_exit__` + member 函数（无 handler、无 expose）| 严格限制 | ✅ | `parser.rs:228-243` | scope body 不接受 `expose`/`handler` 关键字 |
 | 线程句柄绑定 `:= h` 与离开作用域不自动终止 | 语义 | ✅ | `parser.rs:616-622`、句柄是 `Arc<ThreadState>`，不绑定生命周期 | 离开作用域只丢弃 `Arc`，不触发 terminate |
-| Self 与模板参数可见性 | `self.fieldName`、`self.paramName` | ⚠️ | `event_loop.rs:115-120`、`types/src/checker/registration.rs`、`eval.rs`（field access） | 实现存在；但参数与 expose/define 字段是否互不覆盖未审计；缺反例测试 |
+| Self 与模板参数可见性 | `self.fieldName`、`self.paramName` | ✅ | `event_loop.rs:115-120`、`eval.rs`（field access）；`checker/registration.rs::check_self_namespace_collisions` 拒绝参数/字段重名 | 参数与字段共享 `self.` 命名空间且必须互不相同（§2 规则）；测试 `typecheck.rs` 三例（param↔field / define↔param 拒绝 + distinct 允许）|
 | 模板参数错误（arity 不匹配）→ 线程崩溃 | 实现层防御 | ✅ | `event_loop.rs:102-114` | 不静默吞 |
 | 启动位置：spawn 只能作语句、不能嵌入表达式 | 句法约束 | ✅ | parser 无 `$` 表达式 primary（`Token::Dollar` 仅在 `parse_stmt`/prebind 消费）；§4.7 明确允许 spawn 出现在任意**语句**位置 | L-TEMPLATE-APPLY-CONTEXT 无可 lint 的 AST 目标：把 spawn 写进表达式是 parse 错误，由 parser 层强制。故跳过该 lint（见 §12 未实现表）|
 
@@ -88,7 +88,7 @@
 | R-HANDLER-4 | Terminating/Terminated/Crashed 拒绝新 handler；队列项以调度失败结束 | ✅ | `thread_state.rs:170-188` + `event_loop.rs::drain_handlers` | 三种状态映射到三个 dispatch error |
 | R-HANDLER-5 | 主体结束后不再执行 handler | ✅ | `event_loop.rs:252,259,289` 主体完成路径 drain 队列 | |
 | R-HANDLER-PING | 所有线程模板隐式具有 `async handler __ping__(): String` 返回 "pong" | ✅ | `registration.rs` 自动注册 + `thread_state.rs::dispatch_handler` 入口特判；不进队列、不受 R-HANDLER-2 / `#exclusive` 约束 | P0-2；测试 `tests/tss/ping_handler.tss`；用户重写触发 L-HANDLER-PING-REDEFINED |
-| R-HANDLER-SCOPE | handler 只能访问模板对象，不可访问外部作用域 | ⚠️ | `event_loop.rs:39,120` + 创建 handler body 时使用模板 env | 实现倾向正确，但无 lint/反例测试 |
+| R-HANDLER-SCOPE | handler 只能访问模板对象，不可访问外部作用域 | ✅ | `event_loop.rs:39,120` + 创建 handler body 时使用模板 env | 测试 `test_handler_cannot_access_outer_scope`：handler 引用顶层局部 `outer` 在运行时失败（被 `try await` 捕获为 Err），证明不泄漏外部作用域 |
 | R-EXCL-1 | `#exclusive` 内独占线程；handler/timer/IO 不交错 | ✅ | `event_loop.rs:300 + 345-350`（select gate + handler 任务 watch 等待）| `exclusive_block.tss` 覆盖 |
 | R-EXCL-2 | `#exclusive` 阻塞 handler 进入，但不阻塞入队 | ✅ | mpsc 通道一直接收；只在主 select 上 gate | |
 | R-EXCL-3 | 在 `#exclusive` 期间收到 terminate → 立即转 Terminating，teardown 延后 | ✅ | `event_loop.rs:157-184, 199-223, 270-294` | 代码注释明确引用 R-EXCL-3 |
@@ -133,7 +133,7 @@
 | 条目 | 描述 | 状态 | 实现位置 | 备注 |
 |---|---|---|---|---|
 | R-TRY-1 | `try expr` 捕获运行时错误 → `Result<T, error>`；不崩溃 | ✅ | `parser.rs:816-821`、`eval.rs`（Try 分支）+ `runtime/src/error.rs:157-185`（`kind_and_message` 转换）| `scope_binding.tss` 覆盖 |
-| R-TRY-2 | `try await expr` = `try (await expr)`，仅 async 上下文 | ⚠️ | parser 中 `try` 与 `await` 都作 unary prefix，组合可解析；缺乏严格上下文检查 | 缺独立测试 |
+| R-TRY-2 | `try await expr` = `try (await expr)`，仅 async 上下文 | ✅ | parser 中 `try`/`await` 组合解析为 `try (await ..)`；内层 `await` 的 async 上下文由 L-AWAIT-ASYNC-ONLY 守护 | 测试 `test_try_await_yields_result`（async 上下文得 Ok）+ smoke `try_await_in_sync_function_is_rejected` |
 | R-TRY-3 | `error` 值具有稳定 `.kind` 与 `.message` 字段 | ✅ | `runtime/src/value.rs:47`（`ErrorObj { kind, message }`）+ `kind_and_message` 集中映射 | `scope_binding.tss` 比较 `kind == "ScopeGone"` |
 | `panic(msg): never` | 立即触发线程崩溃 | ✅ | `parser.rs:795-801`、`eval.rs`、`error.rs:7-13` | 内联 `test_assert_failure` 相关 |
 | `assert(cond, msg?)` | false → AssertionFailed 崩溃；所有 build 模式启用 | ✅ | `parser.rs:802-808`、`eval.rs`、`error.rs:15-24` | 无构建期开关 |
@@ -204,7 +204,7 @@
 | `Queue<T>` | push/enqueue/tryPush/tryPop/dequeue/size/isEmpty/isClosed/waitForNonEmpty/close；capacity ≤ 0 = 无界 | `runtime/src/queue.rs:1-106`、`builtin.rs:200-229` | ✅ |
 | `locked<T>` | lock/tryLock/unlock/isLocked/get/set；显式 + 隐式两接口 | `runtime/src/locked.rs` | ✅ |
 | `signal` / `contract` / `permit` | 已在 §7 覆盖 | `runtime/src/signal.rs` | ✅ |
-| `ParseError` | `String.toInt() / toDouble()` 返回 | `builtin.rs:52-62`：以 `Result<T, Value::Str(...)>` 表达 | ⚠️ 实际错误是 `Value::Str`，非独立 `ParseError` 类型 |
+| `ParseError` | `String.toInt() / toDouble()` 返回 | `builtin.rs:153-163`：`Result<T, Value::Str(...)>` | ✅ 规范《错误与异常语义草案 §0.x》明确定义 ParseError 的运行时表示**就是字符串**（`.unwrapErr()` 取出消息），故现实现已对齐；测试 `test_parse_error_is_string_payload` |
 | `error`（`.kind` + `.message`）| `try` 表达式结果 | `runtime/src/value.rs:47`、`error.rs::kind_and_message` | ✅ |
 | `Future<T>` | wait、isDone | `builtin.rs:148-154` | ✅ |
 | 字符串方法（startsWith / endsWith / contains / indexOf / trim / split）| 标准容器规范 §13 | `builtin.rs` | ✅（round 3 加 6 方法）|
@@ -217,15 +217,15 @@
 | 条目 | 描述 | 状态 | 实现位置 | 备注 |
 |---|---|---|---|---|
 | `let` 必须初始化 | | ✅ | `parser.rs:480-488` | |
-| 变量可在嵌套块中遮蔽，同块内重复声明禁止 | | ✅ | 遮蔽由嵌套 env 实现；`checker/stmts.rs::check_dup_lets`（接入 `check_block` / scope 块 / Pass 4 顶层）拒绝同块 let-vs-let 重复 | 测试 `tessera-types/tests/typecheck.rs`：拒绝重复 + 三个 must-not-fire（嵌套遮蔽 / 兄弟块 / let 遮蔽参数）。注：顶层自由函数体当前不走 Pass 3 类型检查（pre-existing gap），其块内重复不被覆盖 |
+| 变量可在嵌套块中遮蔽，同块内重复声明禁止 | | ✅ | 遮蔽由嵌套 env 实现；`checker/stmts.rs::check_dup_lets`（接入 `check_block` / scope 块 / Pass 4 顶层）拒绝同块 let-vs-let 重复 | 测试 `tessera-types/tests/typecheck.rs`：拒绝重复 + 三个 must-not-fire（嵌套遮蔽 / 兄弟块 / let 遮蔽参数）+ 自由函数体内重复（Round 4 起 Pass 3 也检查顶层自由函数体，见 `duplicate_let_in_free_function_body_is_rejected`）|
 | §2.2 赋值 RHS 类型须匹配 | | ✅ | `checker/stmts.rs:21-35` | |
 | §3.1 块作用域：`let` 离开块即失效 | | ✅ | env 在 block enter/exit 推/弹 | |
 | §3.2 `@template` 修饰块 hooks 顺序 | `__on_enter__` 前置，`__on_exit__` 后置 | ✅ | `eval.rs::exec_scope_block` | `scope_hooks.tss` 覆盖 |
 | §4.2 `if` 条件必须 bool | | ✅ | `checker/stmts.rs:37-55` | |
 | §5.1 `while`：break/continue 支持 | | ✅ | `parser.rs:509-517` + `eval.rs::exec_while` | |
 | §5.2 `for(init; cond; update)`：循环变量作用域局限 | | ✅ | `parser.rs:519-543` + scoped env | |
-| §6.1 / §6.2 break / continue | 仅在循环内 | ⚠️ | parser 允许；`eval.rs` 使用 Result 退出循环；外层使用未做编译期检查 | 运行时返回的 Break/Continue 在循环外会传到顶层；缺静态拒绝 |
-| §7 return 语义 | 非 void 必须有值；线程 body 不允许直接 return 出线程 | ⚠️ | 运行时 return 在 thread body 顶层会导致主体结束（自然终止）| 行为合理但与 spec "不允许"严格语义不同；缺 lint |
+| §6.1 / §6.2 break / continue | 仅在循环内 | ✅ | `passes/break_continue_outside_loop.rs`（L-CONTROL-OUTSIDE-LOOP, Error）静态拒绝任意上下文的循环外 break/continue | 循环上下文在函数/handler/spawn 边界重置，对 if/scope/#exclusive 透明；测试 4 例 |
+| §7 return 语义（线程 body）| void-like：裸 `return;` 合法（=自然终止），`return expr;` 禁止 | ✅ | `passes/void_return_value.rs` 扩展：thread spawn body 顶层带值 return → L-VOID-RETURN-VALUE | 规范《语句与控制流 §9》改为 void-like；测试 `return_value_from_thread_body_is_rejected` / `bare_return_in_thread_body_is_ok` |
 | §8.1 顶层禁止 return/break/continue | | ✅ | `passes/toplevel_control_flow.rs`（L-TOPLEVEL-CONTROL-FLOW）：顶层 `await`/`return` 禁止，`break`/`continue` 仅循环内合法 | P1-1 |
 | §9 线程主体自然结束 → 线程终止 | | ✅ | `event_loop.rs:226-265` | |
 
@@ -246,14 +246,14 @@
 
 ## 12. Linter 规则对照
 
-实现注册在 `crates/tessera-lint/src/passes/mod.rs::all()`，当前共 **25** 个 pass（权威列表以 `mod.rs::all()` 为准）。
+实现注册在 `crates/tessera-lint/src/passes/mod.rs::all()`，当前共 **29** 个 pass（权威列表以 `mod.rs::all()` 为准）。
 
-### 已实现（25）
+### 已实现（29）
 
 | 规则 ID | 文件 | 检查内容 | 状态 |
 |---|---|---|---|
 | L-AWAIT-ASYNC-ONLY | `passes/await_async_only.rs` | `await` 仅在 async 函数 / handler 内 | ✅ |
-| L-HANDLER-AWAIT-TYPE | `passes/handler_await_type.rs` | `.wait()` 不可用于 HandlerFuture；反之亦然 | ⚠️ 仅识别简单 Ident 接收者，未覆盖 field/method 链 |
+| L-HANDLER-AWAIT-TYPE | `passes/handler_await_type.rs` | `.waitHandler()` 不可用于 Future（链式接收者经 ScopedTyper 解析）| ✅ |
 | L-EXPOSE-MUTABLE-UNSAFE | `passes/expose_mutable_unsafe.rs` | `expose_mutable` 字段类型必须并发安全 | ✅ |
 | L-GENERIC-TYPE-ARG-MISSING（+ COUNT）| `passes/generic_type_arg_missing.rs` | 容器泛型类型参个数检查 | ✅（兼覆盖 wrong-count）|
 | L-TERMINATE-NON-TERMINATABLE | `passes/terminate_non_terminatable.rs` | `.terminate()` 仅对 terminatable 线程 | ✅ |
@@ -263,7 +263,8 @@
 | L-EXCL-AWAIT | `passes/exclusive_self_primitive_await.rs` | `#exclusive` 内 await/`.wait()` 自有同步原语（R-EXCL-4 sound 子集）| ✅ Warn |
 | L-EXPOSE-READONLY-WRITE | `passes/expose_readonly_write.rs` | `expose`（只读）字段不可外部写 | ✅ |
 | L-DEFINE-EXTERNAL-ACCESS | `passes/define_external_access.rs` | `define` 字段不可经句柄外部访问 | ✅ |
-| L-TOPLEVEL-CONTROL-FLOW | `passes/toplevel_control_flow.rs` | 顶层禁 `await`/`return`，`break`/`continue` 仅循环内 | ✅ |
+| L-TOPLEVEL-CONTROL-FLOW | `passes/toplevel_control_flow.rs` | 顶层禁 `await`/`return`（`break`/`continue` 移交 L-CONTROL-OUTSIDE-LOOP）| ✅ |
+| L-CONTROL-OUTSIDE-LOOP | `passes/break_continue_outside_loop.rs` | `break`/`continue` 仅在循环内（任意上下文）| ✅ Error |
 | L-FUNCTION-HOOK-SIGNATURE | `passes/hook_signature.rs` | hook 签名约束（sync/async void）| ✅ |
 | L-HANDLER-RESULT-IGNORED | `passes/handler_result_ignored.rs` | 裸 handler 调用语句报警 | ✅ Warn |
 | L-HANDLER-PING-REDEFINED | `passes/handler_ping_redefined.rs` | 用户重定义 `__ping__` 报错 | ✅ |
@@ -272,7 +273,10 @@
 | L-VOID-RETURN-VALUE | `passes/void_return_value.rs` | `void` 单元出现 `return <expr>;` | ✅ Error |
 | L-EXPOSE-READONLY-CONTAINER | `passes/expose_readonly_container.rs` | 只读 `expose` 非并发安全容器（List/Map）| ✅ Info |
 | L-GENERIC-NESTING-DEPTH | `passes/generic_nesting_depth.rs` | 泛型嵌套深度 > 3 | ✅ Info |
-| L-PANIC-OVERUSE | `passes/panic_overuse.rs` | 单个函数/handler 内 `panic(...)` > 3 次 | ✅ Info |
+| L-AT-TEMPLATE-PARAM-MISMATCH | `passes/template_param_mismatch.rs` | 模板应用实参数 ∉ [min..=max] | ✅ Warn |
+| L-ASSERT-ALWAYS-TRUE / L-ASSERT-ALWAYS-FALSE | `passes/assert_const_condition.rs` | assert 条件字面量常量折叠为 true/false | ✅ Warn |
+| L-AWAIT-UNCONSUMED-FUTURE | `passes/await_unconsumed_future.rs` | 裸语句丢弃 Future/HandlerFuture（async 调用 / Future 方法）| ✅ Warn |
+| L-TERMINATE-FUTURE-IGNORED | `passes/terminate_future_ignored.rs` | 裸 `handle.terminate();` 丢弃 teardown Future | ✅ Warn |
 | L-SIGNAL-AWAIT-IN-SYNC | `passes/signal_await_in_sync.rs` | sync 上下文 `await <signal>` | ✅ |
 | L-SIGNAL-WAIT-IN-ASYNC | `passes/signal_wait_in_async.rs` | async 上下文 `.wait()` on signal | ✅ Warn |
 | L-CONTRACT-AWAIT-IN-SYNC | `passes/contract_await_in_sync.rs` | sync 上下文 `await <contract>` | ✅ |
@@ -284,16 +288,14 @@
 
 | 类别 | 规则及处置 |
 |---|---|
-| async/await | L-ASYNC-NO-AWAIT (Info) — **跳过**：合法的「无 await async 函数」（如 `await run()` 需 `run` 为 async）与冗余 async 不可静态区分，会误伤且破坏 `--check` 干净；L-AWAIT-EXPR-IN-TOPLEVEL — 顶层场景已由 L-TOPLEVEL-CONTROL-FLOW 覆盖 |
-| terminate | L-TERMINATE-FUTURE-IGNORED (Warn) — 需追踪 Future 消费 |
-| expose / define | L-EXPOSE-MUTABLE-ACCESS-PATTERN (Info)；L-DEFINE-IN-NON-TEMPLATE — **跳过**：`define` 仅在模板成员位置消费，他处为 parse 错误，parser 层已强制 |
-| handler | L-HANDLER-MUST-ASYNC — **语法层强制**：`handler` 必须 `async` 由 parser 保证，无独立 pass（与 L-AT-TEMPLATE-STACKING 同处理；曾有空占位 pass，已删）；L-HANDLER-NO-AWAIT (Info)、L-HANDLER-CALL-SITE-AWAIT (Info)、L-HANDLER-DISPATCH-ERROR-UNHANDLED (Info)、L-HANDLER-FUTURE-MISUSE (Error；`L-HANDLER-AWAIT-TYPE` 已覆盖反方向) |
+| async/await | L-ASYNC-NO-AWAIT (Info) — **弃**：合法的「无 await async 函数」（如 `await run()` 需 `run` 为 async）与冗余 async 不可静态区分，会误伤且破坏 `--check` 干净；L-AWAIT-EXPR-IN-TOPLEVEL — 顶层场景已由 L-TOPLEVEL-CONTROL-FLOW 覆盖 |
+| expose / define | L-EXPOSE-MUTABLE-ACCESS-PATTERN (Info) — 需用法流分析；L-DEFINE-IN-NON-TEMPLATE — **跳过**：`define` 仅在模板成员位置消费，他处为 parse 错误，parser 层已强制 |
+| handler | L-HANDLER-MUST-ASYNC — **语法层强制**（无 pass，曾有空占位已删）；L-HANDLER-NO-AWAIT (Info) — **弃**（前提"无 await⇒冗余"不成立，会误伤 demo `status` 并破坏 `--check`）；L-HANDLER-CALL-SITE-AWAIT (Info)、L-HANDLER-DISPATCH-ERROR-UNHANDLED (Info)、L-HANDLER-FUTURE-MISUSE (Error；`L-HANDLER-AWAIT-TYPE` 已覆盖反方向) — 需流分析 |
 | template | L-TEMPLATE-APPLY-CONTEXT — **跳过**：parser 无 `$` 表达式 primary，spawn 只能作语句（§4.7 许可所有语句位置），嵌入表达式即 parse 错误；L-AT-TEMPLATE-STACKING — 语法已防御 |
-| option/result | L-OPTION-UNWRAP-POSSIBLE-NONE、L-RESULT-UNWRAP-POSSIBLE-ERR — 需数据流分析 |
-| future | L-AWAIT-UNCONSUMED-FUTURE (Warn) — 需追踪 Future 消费 |
-| sync 原语 | L-SYNC-EXPOSE-OWNER (Info)、L-SYNC-AWAIT-NOCHECK、L-SYNC-SCOPE-DEFINE-PASS (Warn)、L-SYNC-TRIGGER-AFTER-BROKEN (Info) |
-| panic / assert | L-ASSERT-SIDE-EFFECT — **跳过**：Tessera 赋值是语句非表达式（`count++`/`x=5` 不可表达于 assert 条件），仅余函数/方法调用，纯/非纯不可判定，会误伤 `assert(list.isEmpty())` 类合法写法；L-ASSERT-ALWAYS-TRUE / L-ASSERT-ALWAYS-FALSE — 需常量折叠 |
-| style | L-NAMING-THREAD-HANDLE (Info) — **跳过**：约定为句柄名以 `Thread` 结尾，但项目自身惯用短名（`r`/`d`/`w1`/`logger`…），触发会破坏 `--check` 干净并误伤惯用写法 |
+| option/result | L-OPTION-UNWRAP-POSSIBLE-NONE、L-RESULT-UNWRAP-POSSIBLE-ERR — **弃**：直接 `.unwrap()` 表示作者已知晓 None/Err 风险；有用版需数据流/CFG，零FP版（字面量 `None.unwrap()`）无价值。L-OPTION-PATTERN-USE 同理 |
+| sync 原语 | L-SYNC-EXPOSE-OWNER (Info)、L-SYNC-AWAIT-NOCHECK、L-SYNC-SCOPE-DEFINE-PASS (Warn)、L-SYNC-TRIGGER-AFTER-BROKEN (Info) — 需 owner/flow 追踪 |
+| panic / assert | L-ASSERT-SIDE-EFFECT — **弃**：Tessera 赋值是语句非表达式（`count++`/`x=5` 不可表达于 assert 条件），仅余调用、纯/非纯不可判定，会误伤 `assert(list.isEmpty())`；L-PANIC-OVERUSE — **已删**（纯计数阈值属 wildcard 启发式，价值不足；语义版"在 Result/Option 返回函数里 panic"留作 backlog）|
+| style | L-NAMING-THREAD-HANDLE (Info) — **弃**：约定句柄名以 `Thread` 结尾，但项目惯用短名（`r`/`d`/`w1`/`logger`…），触发会破坏 `--check` 干净并误伤惯用写法 |
 
 
 ## 13. example-code.md 覆盖映射
@@ -336,13 +338,14 @@
 
 ### 缺失的 Linter 规则（见 §12 未实现表）
 
-- **方向 1 Round 3 已落地**：L-RETURN-TYPE-MISMATCH、L-VOID-RETURN-VALUE（Error）；L-EXPOSE-READONLY-CONTAINER、L-GENERIC-NESTING-DEPTH、L-PANIC-OVERUSE（Info）。
-- **经评估跳过**（理由见 §12）：L-TEMPLATE-APPLY-CONTEXT、L-DEFINE-IN-NON-TEMPLATE（parser 层已强制）；L-ASYNC-NO-AWAIT、L-NAMING-THREAD-HANDLE、L-ASSERT-SIDE-EFFECT（不可 sound 静态化 / 会误伤合法写法并破坏 `--check` 干净）。
-- **仍开放**：option/result unwrap 可空性、L-AWAIT-UNCONSUMED-FUTURE、L-TERMINATE-FUTURE-IGNORED、L-ASSERT-ALWAYS-TRUE/FALSE 等需数据流分析或常量折叠。
+- **Round 3 已落地**：L-RETURN-TYPE-MISMATCH、L-VOID-RETURN-VALUE（Error）；L-EXPOSE-READONLY-CONTAINER、L-GENERIC-NESTING-DEPTH（Info）。
+- **Round 4 已落地**：L-CONTROL-OUTSIDE-LOOP、L-AT-TEMPLATE-PARAM-MISMATCH、L-ASSERT-ALWAYS-TRUE/FALSE、L-AWAIT-UNCONSUMED-FUTURE、L-TERMINATE-FUTURE-IGNORED；并删除 L-PANIC-OVERUSE（纯计数 wildcard）。
+- **经评估弃用/跳过**（理由见 §12）：L-TEMPLATE-APPLY-CONTEXT、L-DEFINE-IN-NON-TEMPLATE（parser 层已强制）；L-ASYNC-NO-AWAIT、L-HANDLER-NO-AWAIT、L-NAMING-THREAD-HANDLE、L-ASSERT-SIDE-EFFECT、option/result unwrap（不可 sound / 误伤 / 直接 unwrap 即已知晓风险）。
+- **仍开放**：L-SYNC-* 系、L-EXPOSE-MUTABLE-ACCESS-PATTERN、L-HANDLER-FUTURE-MISUSE 等需数据流/owner 追踪。
 
 ### 测试缺口
 
-- **全部已补齐**：`keepalive()` 永不返回（§3）、`expose_mutable` 字段替换触发路径（§4）、短路求值带副作用 RHS 反例（§8）、同块重复声明拒绝（§10）、example 3/8/9 独立 .tss（§13）。
+- **全部已补齐**：`keepalive()` 永不返回（§3）、`expose_mutable` 字段替换（§4）、短路求值反例（§8）、同块重复声明拒绝（§10）、example 3/8/9（§13）；Round 4 补齐 R-TRY-2（§6）、R-HANDLER-SCOPE（§3）、ParseError 字符串负载（§9）。
 
 
 ## 16. 验证与维护
@@ -352,8 +355,8 @@
 1. **代码定位**：报告中每条 `file:line` 在仓库可直接打开。可用 ripgrep 复核某条目，例如：
    - `rg "is_concurrent_safe" crates/` → 验证 §4 R-EXPOSE-2；
    - `rg "__on_terminate__" crates/tessera-interp/src/event_loop.rs` → 验证 §3 R-LIFE-2。
-2. **集成测试断言**：在仓库根运行 `cargo test -p tessera-interp`（44）与 `cargo test -p tessera-types`（5 typecheck）应全部通过；报告中标 ✅ 的条目对应的测试名可直接 grep 自 `crates/tessera-interp/tests/integration.rs` 与 `crates/tessera-types/tests/typecheck.rs`。
-3. **Linter 实装核对**：`crates/tessera-lint/src/passes/mod.rs::all()` 共 25 个 `Box::new(...)`，与 §12 已实现表完全对应。
+2. **集成测试断言**：在仓库根运行 `cargo test -p tessera-interp`（47）与 `cargo test -p tessera-types`（9 typecheck）应全部通过；报告中标 ✅ 的条目对应的测试名可直接 grep 自 `crates/tessera-interp/tests/integration.rs` 与 `crates/tessera-types/tests/typecheck.rs`。
+3. **Linter 实装核对**：`crates/tessera-lint/src/passes/mod.rs::all()` 共 29 个 `Box::new(...)`，与 §12 已实现表完全对应。
 4. **示例核对**：用 `E:/Tessera-Spec/example-code.md` 与 `helloworld.tss` / `demo.tss` / `tests/tss/*.tss` 比对 §13。
 
 ### 维护建议
@@ -362,9 +365,9 @@
 - **基线版本号**：报告顶部 commit 哈希需在每次主干合并后由作者更新（例如自动化脚本扫描 `git log -1 --format=%h`）。
 - **规范变更**：若 `E:/Tessera-Spec/*.md` 发生修订（即使是行号变化），需复核标 ✅ 的条目是否还和文档一致。
 - **TODO 跟踪**：§15 仍开放项建议拆为 GitHub Issue 跟踪，每条 close 时同步更新本报告。
-- **报告自身的测试**：CI 可加 `cargo test -p tessera-lint --tests` smoke check，确保 25 个 pass 与本报告一致。
+- **报告自身的测试**：CI 可加 `cargo test -p tessera-lint --tests` smoke check，确保 29 个 pass 与本报告一致。
 
 ---
 
-*本报告反映 tessera-mvp 方向 1 Round 3 / Tessera-Spec `6c8548a` 的当前状态；逐轮修复脉络见 git 历史。*
+*本报告反映 tessera-mvp 方向 1 Round 4 / Tessera-Spec `41ae1c4` 的当前状态；逐轮修复脉络见 git 历史。*
 

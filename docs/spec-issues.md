@@ -70,3 +70,22 @@
 | 同块重复声明拒绝 | ✅ 落地 | `checker/stmts.rs::check_dup_lets`（let-vs-let，接入 `check_block`/scope 块/Pass 4）。规范 `语句与控制流规范草案.md §2.1.2` 已有定义，无需改规范。测试 `tessera-types/tests/typecheck.rs`。 |
 | 测试缺口（keepalive / expose_mutable 替换 / 短路 / example 3·8·9）| ✅ 补齐 | 见 `spec-alignment.md §3/§4/§8/§13`；`tests/tss/*.tss` + `integration.rs`。 |
 | 删除空占位 pass L-HANDLER-MUST-ASYNC | ✅ 清理 | 该 pass `return vec![]`（handler 必须 async 由语法强制），与代码库对"语法已防御"规则（L-AT-TEMPLATE-STACKING / L-DEFINE-IN-NON-TEMPLATE）"不写 pass、只在 §12 注明"的约定不一致。删除 pass，规则在 `Linter 规则草案.md §4` 补实现注记。Lint pass 26→25。 |
+
+## 后续立项 Round 4（方向 1）：规则 refinement
+
+> 原则：wildcard 规则在"定义层"refine（精确化为可判定谓词，或诚实降级/弃用），而非给含糊规则硬凑实现。Lint pass 25 → 29（删 1 + 增 5）。详见 `spec-alignment.md` §2/§3/§6/§9/§10/§12。
+
+| 条目 | 状态 | 处置与位置 |
+|---|---|---|
+| L-PANIC-OVERUSE | 🗑️ 删除 | 纯计数阈值（>3）属 wildcard 启发式、价值不足。删 pass；`Linter 规则草案.md §7` 标未实现，语义版（Result/Option 返回函数里 panic）留 backlog。 |
+| L-CONTROL-OUTSIDE-LOOP | ✅ 落地（Error，新 ID）| `passes/break_continue_outside_loop.rs`：任意上下文循环外 break/continue。从 L-TOPLEVEL-CONTROL-FLOW 移出 break/continue 分支避免重报。规范 `Linter 规则草案.md §9` + 引《语句与控制流 §6.1/§6.2》。 |
+| thread-body `return` void-like | ✅ 落地 | 裸 `return;` 合法（=自然终止），`return expr;` 报 L-VOID-RETURN-VALUE（扩展该 pass 到 spawn body）。规范 `语句与控制流规范草案.md §9` 改为 void-like（替换旧"完全禁止 return"）。 |
+| 模板参数/字段重名拒绝 | ✅ 落地 | `checker/registration.rs::check_self_namespace_collisions`。规范 `模板与线程规范.md §2` 补显式规则（参数/字段共享 `self.` 命名空间）。测试 `typecheck.rs`。 |
+| L-AT-TEMPLATE-PARAM-MISMATCH | ✅ 落地（Warn）| `passes/template_param_mismatch.rs`：实参数 ∉ [min..=max]（min=无默认参数数）。规范 `Linter 规则草案.md §8` 补实现注记。 |
+| L-ASSERT-ALWAYS-TRUE / L-ASSERT-ALWAYS-FALSE | ✅ 落地（Warn）| `passes/assert_const_condition.rs`：字面量常量折叠，非字面量即放弃（零FP）。规范 §7 补实现注记。 |
+| L-AWAIT-UNCONSUMED-FUTURE | ✅ 落地（Warn）| `passes/await_unconsumed_future.rs`：裸 async 调用 / Future 方法被丢弃；排除 terminate 与 handler。规范 §12 补实现注记。 |
+| L-TERMINATE-FUTURE-IGNORED | ✅ 落地（Warn）| `passes/terminate_future_ignored.rs`：裸 `handle.terminate();`。规范 §2 补实现注记。 |
+| 自由函数体类型检查 | ✅ 落地 | `checker/mod.rs` Pass 3 增 `TopLevelItem::FuncDef → check_func_body`（此前跳过）。 |
+| L-HANDLER-AWAIT-TYPE 链式接收者 | ✅ 确认 | 现已用 `ScopedTyper` 解析 field/method 链（§12 ⚠️ 旧注过时），补 smoke。 |
+| R-TRY-2 / R-HANDLER-SCOPE / ParseError 测试 | ✅ 补齐 | R-TRY-2（async 得 Ok + sync 被 L-AWAIT-ASYNC-ONLY）；R-HANDLER-SCOPE（handler 引用外部局部运行时失败）；ParseError 规范 §0.x 定义为字符串负载，现实现已对齐（仅补测试，无 runtime 改动）。 |
+| L-OPTION/RESULT-UNWRAP-POSSIBLE-* / L-ASSERT-SIDE-EFFECT / L-HANDLER-NO-AWAIT / L-NAMING-THREAD-HANDLE | ⏭️ 弃 | unwrap：直接 unwrap 即作者已知晓风险，有用版需 CFG；assert-side-effect：赋值非表达式、调用纯性不可判定；no-await 系：前提不成立会误伤；naming：项目惯用短名。均会破坏零FP/`--check` 干净。 |
