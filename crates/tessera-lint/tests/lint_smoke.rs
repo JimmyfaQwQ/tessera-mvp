@@ -656,3 +656,36 @@ fn waited_terminate_is_ok() {
     "#);
     assert!(!has_rule(&diags, "L-TERMINATE-FUTURE-IGNORED"));
 }
+
+// ── L-HANDLER-AWAIT-TYPE: chained (method-call) receiver resolution ──────────
+
+#[test]
+fn wait_handler_on_chained_future_is_rejected() {
+    // Receiver `h.terminate()` is a method-call chain resolving to Future<void>;
+    // `.waitHandler()` on a Future is the type error this rule catches.
+    let diags = run_lints(r#"
+        $template W() { async function __on_terminate__(): void {} }
+        $W() { await keepalive(); } := h;
+        h.terminate().waitHandler();
+    "#);
+    assert!(has_rule(&diags, "L-HANDLER-AWAIT-TYPE"));
+}
+
+// ── R-TRY-2: the `await` in `try await` still needs an async context ─────────
+
+#[test]
+fn try_await_in_sync_function_is_rejected() {
+    // `try await s` = `try (await s)`; the inner `await` in a sync context is
+    // rejected by L-AWAIT-ASYNC-ONLY. (Uses a template member fn — top-level
+    // free-fn bodies aren't walked by that pass.)
+    let diags = run_lints(r#"
+        $template W() {
+            async function __on_terminate__(): void {}
+            function f(): void {
+                let s: signal = signal();
+                let r = try await s;
+            }
+        }
+    "#);
+    assert!(has_rule(&diags, "L-AWAIT-ASYNC-ONLY"));
+}

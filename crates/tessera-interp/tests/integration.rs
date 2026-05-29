@@ -465,3 +465,55 @@ async fn test_short_circuit_and_skips_rhs() {
 async fn test_short_circuit_or_skips_rhs() {
     assert_runs_ok!("let b: bool = true || (1 / 0 == 0); assert(b);");
 }
+
+// ── R-TRY-2: `try await expr` = `try (await expr)`, yields Result ─────────────
+
+#[tokio::test]
+async fn test_try_await_yields_result() {
+    assert_runs_ok!(r#"
+        $template S() {
+            async function __on_terminate__(): void {}
+            async handler get(): int { return 42; }
+        }
+        $S() { await keepalive(); } := h;
+        let r: Result<int, error> = try await h.get();
+        assert(r.isOk());
+        assert(r.unwrap() == 42);
+        h.terminate().wait();
+    "#);
+}
+
+// ── R-HANDLER-SCOPE: a handler cannot read an outer-scope (non-self) variable ─
+
+// `outer` is a top-level local, not a template field/param. The handler body
+// runs in the template's own environment, so referencing it fails at runtime;
+// `try await` captures the failure as Err rather than crashing the caller.
+#[tokio::test]
+async fn test_handler_cannot_access_outer_scope() {
+    assert_runs_ok!(r#"
+        $template W() {
+            async function __on_terminate__(): void {}
+            async handler peek(): int { return outer; }
+        }
+        let outer: int = 5;
+        $W() { await keepalive(); } := h;
+        let r: Result<int, error> = try await h.peek();
+        assert(r.isErr());
+        h.terminate().wait();
+    "#);
+}
+
+// ── §9: ParseError is a string payload (spec 0.x); toInt/toDouble failure ─────
+
+#[tokio::test]
+async fn test_parse_error_is_string_payload() {
+    assert_runs_ok!(r#"
+        let bad: Result<int, ParseError> = "abc".toInt();
+        assert(bad.isErr());
+        let msg: ParseError = bad.unwrapErr();
+        assert(msg.length() > 0);
+        let good: Result<int, ParseError> = "42".toInt();
+        assert(good.isOk());
+        assert(good.unwrap() == 42);
+    "#);
+}
