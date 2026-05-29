@@ -110,6 +110,98 @@ async fn test_anonymous_thread() {
     assert_runs_ok!(&src);
 }
 
+// ── Standard library extensions (round 3) ────────────────────────────────────
+
+#[tokio::test]
+async fn test_string_starts_ends_with() {
+    assert_runs_ok!(r#"
+        let s: String = "hello world";
+        assert(s.startsWith("hello"));
+        assert(!s.startsWith("world"));
+        assert(s.endsWith("world"));
+        assert(!s.endsWith("hello"));
+        assert("".startsWith(""));
+    "#);
+}
+
+#[tokio::test]
+async fn test_string_contains_index_of() {
+    assert_runs_ok!(r#"
+        let s: String = "héllo";
+        assert(s.contains("ll"));
+        assert(!s.contains("xyz"));
+        // indexOf returns Unicode-scalar index, not byte offset
+        assert(s.indexOf("ll") == 2);
+        assert(s.indexOf("xyz") == -1);
+    "#);
+}
+
+#[tokio::test]
+async fn test_string_trim() {
+    assert_runs_ok!(r#"
+        let s: String = "  hello\n";
+        assert(s.trim() == "hello");
+        assert("nothing".trim() == "nothing");
+    "#);
+}
+
+#[tokio::test]
+async fn test_string_split() {
+    assert_runs_ok!(r#"
+        let parts: List<String> = "a,b,c".split(",");
+        assert(parts.length() == 3);
+        assert(parts.get(0) == "a");
+        assert(parts.get(2) == "c");
+        let chars: List<String> = "ab".split("");
+        assert(chars.length() == 2);
+    "#);
+}
+
+#[tokio::test]
+async fn test_list_contains_index_of() {
+    assert_runs_ok!(r#"
+        let xs: List<int> = List<int>(1, 2, 3);
+        assert(xs.contains(2));
+        assert(!xs.contains(99));
+        assert(xs.indexOf(3) == 2);
+        assert(xs.indexOf(99) == -1);
+    "#);
+}
+
+#[tokio::test]
+async fn test_list_clear() {
+    assert_runs_ok!(r#"
+        let xs: List<int> = List<int>(1, 2, 3);
+        xs.clear();
+        assert(xs.length() == 0);
+        assert(xs.isEmpty());
+    "#);
+}
+
+#[tokio::test]
+async fn test_map_contains() {
+    assert_runs_ok!(r#"
+        let m: Map<String, int> = Map<String, int>();
+        m.set("a", 1);
+        assert(m.contains("a"));
+        assert(!m.contains("b"));
+    "#);
+}
+
+#[tokio::test]
+async fn test_char_classification() {
+    assert_runs_ok!(r#"
+        assert('5'.isDigit());
+        assert(!'a'.isDigit());
+        assert('a'.isAlpha());
+        assert('Z'.isAlpha());
+        assert(!'5'.isAlpha());
+        assert(' '.isWhitespace());
+        assert('\t'.isWhitespace());
+        assert(!'x'.isWhitespace());
+    "#);
+}
+
 // ── R-SYNC-BREAK-3: no deadlock when Broken arrives inside `#exclusive` ──────
 
 #[tokio::test]

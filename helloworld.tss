@@ -95,7 +95,11 @@ $template dispatcher(reader_handle: thread<reader>, threads: Queue<thread<worker
                 let worker: Option<thread<worker>> = self.threads.tryPop();
                 if (worker.isSome()) {
                     let w: thread<worker> = worker.unwrap();
-                    w.echo(text);
+                    // Fire-and-forget: the worker pool serializes via the
+                    // `done` contract, so the HandlerFuture's dispatch outcome
+                    // is intentionally ignored. Capture into `_` to make the
+                    // intent explicit (and quiet L-HANDLER-RESULT-IGNORED).
+                    let _ = w.echo(text);
                 } else {
                     println("No available workers to handle the request.");
                 }

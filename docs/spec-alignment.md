@@ -10,6 +10,35 @@
 > - ❌ 完全未实现
 > - 🔶 实现与规范存在语义偏差，需修复或修订规范
 
+## 第三轮修复总结（commit `c559188` 之后）
+
+| 工作项 | 状态 | 关键改动 |
+|---|---|---|
+| Lint typer 深化（看到 local let） | ✅ | 新建 `scoped_visitor.rs::ScopedTyper`；改造 5 个 pass（handler_await_type / handler_result_ignored / permit_wait_in_async / signal_wait_in_async / contract_wait_in_async）；新增 5 条 smoke 测试；helpers.rs 的 resolve_type_expr 扩展到 thread<X> / List / Map / Option / Result / Future / HandlerFuture；helloworld.tss 一处真实命中（`w.echo(text)` → `let _ = w.echo(text)`） |
+| spec-issues B 剩余 6 条 + B-8 修正 | ✅ | B-3 String 隐式转换格式表、B-4 try 包裹同步表达式、B-5 hook 细则、B-6 字段初始化顺序、B-10 Future vs HandlerFuture、B-11 generic 推断边界；B-8 状态修正 |
+| spec-issues C 4 条 + D 6 条 | ✅ | C-1/C-2/C-4 加引用注与 *Motivation* 示范；C-3 已结构性解决；D-1 匿名 scope 模板、D-2 `:=` 优先级、D-3 原语大小写、D-4 expose_mutable 引用、D-5 spawn 句法位置、D-6 try 优先级 |
+| 标准库扩展（13 方法） | ✅ | String: startsWith / endsWith / contains / indexOf / trim / split；List: contains / indexOf / clear；Map: contains；char: isDigit / isAlpha / isWhitespace；checker/exprs.rs 加签名；builtin.rs 加实现；标准容器规范新增 §13 扩展方法表；8 个内联测试 |
+
+### 第三轮测试规模
+
+| 套件 | 第二轮后 | 第三轮后 |
+|---|---:|---:|
+| tessera-interp integration | 28 | **36** |
+| tessera-lint smoke | 17 | **22** |
+| tessera-parser 单测 | 5 | 5 |
+| tessera-lexer 单测 | 5 | 5 |
+| **合计** | **55** | **68** |
+
+Lint pass 数 20（不变；不引入新规则，5 个 pass 改造为 ScopedTyper 驱动）。`cargo build --workspace --all-targets` 无 warning；`--check helloworld.tss` 与 `--check demo.tss` 均无诊断。
+
+### 第三轮已知保留缺口
+
+- spec-issues E 系列（编号格式、Severity 边界、Rule/Rationale 版式、example-code 联动、跨文档锚点）— 多为机械整理性工作，需要单独成轮。
+- 标准库进一步扩展：HashSet / Channel / map / filter / reduce 等"语言增量"非"对齐补全"。
+- R-SYNC-BREAK-3 字面延迟在协作单线程下无法严格实现（第二轮 Rationale 已说明）。
+
+---
+
 ## 第二轮修复总结（commit `2f7e075` 之后）
 
 | 工作项 | 状态 | 关键改动 |

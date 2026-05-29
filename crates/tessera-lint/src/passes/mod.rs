@@ -5,6 +5,7 @@
 //! the marker struct, and append it to `all()`.
 
 mod helpers;
+mod scoped_visitor;
 
 mod await_async_only;
 mod contract_await_in_sync;

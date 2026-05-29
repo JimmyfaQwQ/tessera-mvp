@@ -42,6 +42,107 @@ impl Interpreter {
             ("length", Value::Str(s))  => Ok(Value::Int(s.chars().count() as i32)),
             ("isEmpty", Value::List(l)) => Ok(Value::Bool(l.borrow().is_empty())),
 
+            // ── Standard-library extensions (round 3) ─────────────────────────
+            ("startsWith", Value::Str(s)) => {
+                let prefix = match args.first() {
+                    Some(Value::Str(p)) => p.clone(),
+                    _ => return Err(RuntimeError::Panic {
+                        message: "String.startsWith(prefix: String) requires a String argument".into(),
+                        location: m.span,
+                    }),
+                };
+                Ok(Value::Bool(s.starts_with(&prefix)))
+            }
+            ("endsWith", Value::Str(s)) => {
+                let suffix = match args.first() {
+                    Some(Value::Str(p)) => p.clone(),
+                    _ => return Err(RuntimeError::Panic {
+                        message: "String.endsWith(suffix: String) requires a String argument".into(),
+                        location: m.span,
+                    }),
+                };
+                Ok(Value::Bool(s.ends_with(&suffix)))
+            }
+            ("contains", Value::Str(s)) => {
+                let needle = match args.first() {
+                    Some(Value::Str(p)) => p.clone(),
+                    _ => return Err(RuntimeError::Panic {
+                        message: "String.contains(needle: String) requires a String argument".into(),
+                        location: m.span,
+                    }),
+                };
+                Ok(Value::Bool(s.contains(&needle)))
+            }
+            ("indexOf", Value::Str(s)) => {
+                let needle = match args.first() {
+                    Some(Value::Str(p)) => p.clone(),
+                    _ => return Err(RuntimeError::Panic {
+                        message: "String.indexOf(needle: String) requires a String argument".into(),
+                        location: m.span,
+                    }),
+                };
+                // Byte offset → Unicode-scalar index so the return value
+                // composes with String[i] (which is scalar-indexed).
+                let idx = s.find(&needle).map(|byte_off| {
+                    s[..byte_off].chars().count() as i32
+                }).unwrap_or(-1);
+                Ok(Value::Int(idx))
+            }
+            ("trim", Value::Str(s)) => Ok(Value::Str(s.trim().to_string())),
+            ("split", Value::Str(s)) => {
+                let sep = match args.first() {
+                    Some(Value::Str(p)) => p.clone(),
+                    _ => return Err(RuntimeError::Panic {
+                        message: "String.split(sep: String) requires a String argument".into(),
+                        location: m.span,
+                    }),
+                };
+                let pieces: Vec<Value> = if sep.is_empty() {
+                    s.chars().map(|c| Value::Str(c.to_string())).collect()
+                } else {
+                    s.split(&sep).map(|p| Value::Str(p.to_string())).collect()
+                };
+                Ok(Value::List(std::rc::Rc::new(std::cell::RefCell::new(pieces))))
+            }
+            ("contains", Value::List(l)) => {
+                let needle = args.first().cloned().unwrap_or(Value::Void);
+                let l = l.borrow();
+                let found = l.iter().any(|v| super::helpers::values_equal(v, &needle));
+                Ok(Value::Bool(found))
+            }
+            ("indexOf", Value::List(l)) => {
+                let needle = args.first().cloned().unwrap_or(Value::Void);
+                let l = l.borrow();
+                let idx = l.iter().position(|v| super::helpers::values_equal(v, &needle))
+                    .map(|i| i as i32)
+                    .unwrap_or(-1);
+                Ok(Value::Int(idx))
+            }
+            ("clear", Value::List(l)) => {
+                l.borrow_mut().clear();
+                Ok(Value::Void)
+            }
+            ("contains", Value::Map(m_val)) => {
+                let key = match args.into_iter().next() {
+                    Some(k) => k,
+                    None => return Err(RuntimeError::Panic {
+                        message: "Map.contains(key) requires a key".into(),
+                        location: m.span,
+                    }),
+                };
+                match ValueKey::try_from(key) {
+                    Ok(vk) => Ok(Value::Bool(m_val.borrow().contains_key(&vk))),
+                    Err(_) => Err(RuntimeError::Panic {
+                        message: "Map.contains() key must be bool/int/char/String".into(),
+                        location: m.span,
+                    }),
+                }
+            }
+            ("isDigit", Value::Char(c)) => Ok(Value::Bool(c.is_ascii_digit())),
+            ("isAlpha", Value::Char(c)) => Ok(Value::Bool(c.is_ascii_alphabetic())),
+            ("isWhitespace", Value::Char(c)) => Ok(Value::Bool(matches!(c, ' ' | '\t' | '\n' | '\r'))),
+
+
             // ── Type conversions ───────────────────────────────────────────────
             ("toString", Value::Int(n))    => Ok(Value::Str(n.to_string())),
             ("toString", Value::Double(f)) => Ok(Value::Str(f.to_string())),

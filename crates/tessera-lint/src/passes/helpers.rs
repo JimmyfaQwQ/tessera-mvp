@@ -15,6 +15,28 @@ pub(crate) fn resolve_type_expr(env: &TypeEnv, te: &TypeExpr) -> Type {
             "double" => Type::Double,
             "char" => Type::Char,
             "String" => Type::TString,
+            "void" => Type::Void,
+            "never" => Type::Never,
+            "List" => Type::List(Box::new(
+                args.first().map(|a| resolve_type_expr(env, a)).unwrap_or(Type::Error)
+            )),
+            "Map" => Type::Map(
+                Box::new(args.first().map(|a| resolve_type_expr(env, a)).unwrap_or(Type::Error)),
+                Box::new(args.get(1).map(|a| resolve_type_expr(env, a)).unwrap_or(Type::Error)),
+            ),
+            "Option" => Type::Option(Box::new(
+                args.first().map(|a| resolve_type_expr(env, a)).unwrap_or(Type::Error)
+            )),
+            "Result" => Type::Result(
+                Box::new(args.first().map(|a| resolve_type_expr(env, a)).unwrap_or(Type::Error)),
+                Box::new(args.get(1).map(|a| resolve_type_expr(env, a)).unwrap_or(Type::Error)),
+            ),
+            "Future" => Type::Future(Box::new(
+                args.first().map(|a| resolve_type_expr(env, a)).unwrap_or(Type::Error)
+            )),
+            "HandlerFuture" => Type::HandlerFuture(Box::new(
+                args.first().map(|a| resolve_type_expr(env, a)).unwrap_or(Type::Error)
+            )),
             "locked" => Type::Locked(Box::new(
                 args.first().map(|a| resolve_type_expr(env, a)).unwrap_or(Type::Error)
             )),
@@ -24,7 +46,17 @@ pub(crate) fn resolve_type_expr(env: &TypeEnv, te: &TypeExpr) -> Type {
             "signal" => Type::Signal,
             "contract" => Type::Contract,
             "permit" => Type::Permit,
-            _ => Type::Error,
+            "thread" => match args.first() {
+                Some(TypeExpr::Named(tn, _)) => env.templates.get(&tn.name)
+                    .map(|(id, _)| Type::ThreadHandle(*id))
+                    .unwrap_or(Type::Error),
+                _ => Type::Error,
+            },
+            // Bare template name used as a type, e.g. `worker` rather than
+            // `thread<worker>` (parser allows this shorthand).
+            other => env.templates.get(other)
+                .map(|(id, _)| Type::ThreadHandle(*id))
+                .unwrap_or(Type::Error),
         },
     }
 }

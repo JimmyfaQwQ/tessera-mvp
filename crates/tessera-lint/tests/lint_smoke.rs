@@ -206,6 +206,83 @@ fn bare_handler_call_is_warned() {
 }
 
 #[test]
+fn local_let_handler_call_is_warned() {
+    // ScopedTyper sees `p` bound by the inner `let`; without it the lint
+    // missed this fire-and-forget pattern.
+    let diags = run_lints(r#"
+        $template W() {
+            async handler do_it(): void {}
+            async function __on_terminate__(): void {}
+        }
+        $template Outer() {
+            async handler dispatch(): void {
+                $W() { await keepalive(); } := p;
+                p.do_it();
+            }
+            async function __on_terminate__(): void {}
+        }
+    "#);
+    assert!(has_rule(&diags, "L-HANDLER-RESULT-IGNORED"));
+}
+
+#[test]
+fn local_signal_wait_in_async_is_warned() {
+    let diags = run_lints(r#"
+        $template T() {
+            async function __on_terminate__(): void {}
+            async function run(): void {
+                let s: signal = signal();
+                s.wait();
+            }
+        }
+    "#);
+    assert!(has_rule(&diags, "L-SIGNAL-WAIT-IN-ASYNC"));
+}
+
+#[test]
+fn local_contract_wait_in_async_is_warned() {
+    let diags = run_lints(r#"
+        $template T() {
+            async function __on_terminate__(): void {}
+            async function run(): void {
+                let c: contract = contract();
+                c.wait();
+            }
+        }
+    "#);
+    assert!(has_rule(&diags, "L-CONTRACT-WAIT-IN-ASYNC"));
+}
+
+#[test]
+fn local_permit_wait_in_async_is_warned() {
+    let diags = run_lints(r#"
+        $template T() {
+            async function __on_terminate__(): void {}
+            async function run(): void {
+                let p: permit = permit(0);
+                p.wait();
+            }
+        }
+    "#);
+    assert!(has_rule(&diags, "L-PERMIT-WAIT-IN-ASYNC"));
+}
+
+#[test]
+fn local_signal_wait_in_sync_is_ok() {
+    // Same shape but in a sync function — no warning expected.
+    let diags = run_lints(r#"
+        $template T() {
+            async function __on_terminate__(): void {}
+            function run(): void {
+                let s: signal = signal();
+                s.wait();
+            }
+        }
+    "#);
+    assert!(!has_rule(&diags, "L-SIGNAL-WAIT-IN-ASYNC"));
+}
+
+#[test]
 fn field_chain_handler_call_is_warned() {
     // FieldAccess receiver — exercises the new lightweight typer.
     let diags = run_lints(r#"

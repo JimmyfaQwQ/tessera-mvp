@@ -307,6 +307,72 @@ impl<'e> TypeChecker<'e> {
                     }
                 }
             }
+            // ── Standard-library extensions (round 3) ──────────────────────────
+            "startsWith" | "endsWith" => {
+                match recv_ty {
+                    Type::TString => Type::Bool,
+                    _ => {
+                        self.env.error(format!("{}() is only defined on String", m.method.name), m.method.span);
+                        Type::Error
+                    }
+                }
+            }
+            "contains" => {
+                match recv_ty {
+                    Type::TString => Type::Bool,
+                    Type::List(_) => Type::Bool,
+                    Type::Map(_, _) => Type::Bool,
+                    _ => {
+                        self.env.error(format!("contains() is not defined on type {recv_ty}"), m.method.span);
+                        Type::Error
+                    }
+                }
+            }
+            "indexOf" => {
+                match recv_ty {
+                    Type::TString | Type::List(_) => Type::Int,
+                    _ => {
+                        self.env.error(format!("indexOf() is not defined on type {recv_ty}"), m.method.span);
+                        Type::Error
+                    }
+                }
+            }
+            "trim" => {
+                match recv_ty {
+                    Type::TString => Type::TString,
+                    _ => {
+                        self.env.error(format!("trim() is only defined on String"), m.method.span);
+                        Type::Error
+                    }
+                }
+            }
+            "split" => {
+                match recv_ty {
+                    Type::TString => Type::List(Box::new(Type::TString)),
+                    _ => {
+                        self.env.error(format!("split() is only defined on String"), m.method.span);
+                        Type::Error
+                    }
+                }
+            }
+            "clear" => {
+                match recv_ty {
+                    Type::List(_) => Type::Void,
+                    _ => {
+                        self.env.error(format!("clear() is not defined on type {recv_ty}"), m.method.span);
+                        Type::Error
+                    }
+                }
+            }
+            "isDigit" | "isAlpha" | "isWhitespace" => {
+                match recv_ty {
+                    Type::Char => Type::Bool,
+                    _ => {
+                        self.env.error(format!("{}() is only defined on char", m.method.name), m.method.span);
+                        Type::Error
+                    }
+                }
+            }
             _ => {
                 if let Type::ThreadHandle(id) = recv_ty {
                     for (_, (tid, info)) in &self.env.templates {
