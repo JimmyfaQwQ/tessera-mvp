@@ -68,9 +68,7 @@ $template reader() {
         print("> ");
         await self.line_available;
         let result: String = "";
-        #exclusive {
         result = self.line.tryPop().unwrap();
-        }
         return result;
     }
 }
