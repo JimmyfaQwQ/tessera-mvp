@@ -105,6 +105,16 @@ impl<'e> ScopedTyper<'e> {
                 }
             }
 
+            // MethodCall return-type inference for the methods lint passes
+            // most often need in chains (Option / Result unwrap, container
+            // pop / get, Future-style wait, etc.). Mirrors the relevant arms
+            // of `checker::exprs::check_method_call` but stays lint-local so
+            // it can run without re-typing the program.
+            Expr::MethodCall(mc) => {
+                let recv_ty = self.infer(&mc.receiver)?;
+                method_return_type(&recv_ty, &mc.method.name, mc, self)
+            }
+
             // For everything else delegate to the env-only inferer; the
             // pass-through is safe because none of the cases there depend on
             // scope-stack visibility (they recurse to Ident, which we've
@@ -133,5 +143,79 @@ impl<'e> ScopedTyper<'e> {
     /// `$Named(...) := h` so the typer knows `h: thread<Named>`.
     pub fn lookup_template_id(&self, name: &str) -> Option<usize> {
         self.env.templates.get(name).map(|(id, _)| *id)
+    }
+}
+
+/// Return the type of `recv.method(args)` given the resolved receiver type
+/// and the method name. Returns `None` for unknown / unsupported combos so
+/// callers can conservatively skip. Mirrors the relevant cases of
+/// `tessera_types::checker::exprs::check_method_call`.
+fn method_return_type<'e>(
+    recv: &Type,
+    method: &str,
+    mc: &MethodCallExpr,
+    typer: &ScopedTyper<'e>,
+) -> Option<Type> {
+    match (method, recv) {
+        ("length", Type::TString) | ("length", Type::List(_)) => Some(Type::Int),
+        ("size", Type::Map(_, _)) | ("size", Type::Queue(_)) => Some(Type::Int),
+        ("isEmpty", _) | ("isClosed", _) | ("isLocked", _)
+        | ("isDone", _) | ("isOk", _) | ("isErr", _) | ("isSome", _) | ("isNone", _)
+        | ("isRaised", _) | ("isPending", _)
+        | ("startsWith", _) | ("endsWith", _) | ("contains", _)
+        | ("isDigit", _) | ("isAlpha", _) | ("isWhitespace", _) | ("tryPush", _) => Some(Type::Bool),
+        ("indexOf", _) | ("count", _) => Some(Type::Int),
+
+        ("pop", Type::List(inner)) => Some(Type::Option(inner.clone())),
+        ("tryPop", Type::Queue(inner)) | ("dequeue", Type::Queue(inner)) => {
+            Some(Type::Option(inner.clone()))
+        }
+        ("get", Type::List(inner)) | ("get", Type::Locked(inner)) => Some(*inner.clone()),
+        ("get", Type::Map(_, v)) => Some(Type::Option(v.clone())),
+        ("remove", Type::Map(_, v)) => Some(Type::Option(v.clone())),
+
+        ("unwrap", Type::Option(inner)) => Some(*inner.clone()),
+        ("unwrap", Type::Result(ok, _)) => Some(*ok.clone()),
+        ("unwrapErr", Type::Result(_, e)) => Some(*e.clone()),
+        ("unwrapOr", Type::Option(inner)) => Some(*inner.clone()),
+        ("unwrapOr", Type::Result(ok, _)) => Some(*ok.clone()),
+
+        ("wait", Type::Future(inner)) | ("wait", Type::HandlerFuture(inner)) => {
+            Some(*inner.clone())
+        }
+        ("wait", Type::Signal) | ("wait", Type::Contract) | ("wait", Type::Permit) => {
+            Some(Type::Void)
+        }
+
+        ("trim", Type::TString) => Some(Type::TString),
+        ("split", Type::TString) => Some(Type::List(Box::new(Type::TString))),
+        ("toString", _) => Some(Type::TString),
+        ("toInt", Type::TString) => Some(Type::Result(
+            Box::new(Type::Int),
+            Box::new(Type::ParseError),
+        )),
+        ("toInt", _) => Some(Type::Int),
+        ("toDouble", Type::TString) => Some(Type::Result(
+            Box::new(Type::Double),
+            Box::new(Type::ParseError),
+        )),
+        ("toDouble", _) => Some(Type::Double),
+        ("toChar", _) => Some(Type::Option(Box::new(Type::Char))),
+
+        ("terminate", Type::ThreadHandle(_)) => Some(Type::Future(Box::new(Type::Void))),
+
+        // A bare handler call on a thread handle resolves to its
+        // HandlerFuture<R>; look up the template's handler signature.
+        (name, Type::ThreadHandle(id)) => {
+            let info = typer.template_by_id(*id)?;
+            let sig = info.handlers.get(name)?;
+            Some(Type::HandlerFuture(Box::new(sig.return_type.clone())))
+        }
+
+        _ => {
+            // Silence "args unused" warning when we end up in the fall-through.
+            let _ = mc;
+            None
+        }
     }
 }

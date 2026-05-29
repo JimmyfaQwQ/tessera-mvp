@@ -10,6 +10,50 @@
 > - ❌ 完全未实现
 > - 🔶 实现与规范存在语义偏差，需修复或修订规范
 
+## 第四轮（收尾轮）修复总结（commit `9542616` 之后）
+
+| 工作项 | 状态 | 关键改动 |
+|---|---|---|
+| 设置回滚 | ✅ | `.claude/settings.local.json` 移除 `spinnerTipsEnabled` 与 `statusLine`（迁至全局），独立 commit |
+| Lint typer 加 method-call 返回类型推断 | ✅ | `scoped_visitor.rs::infer` 新增 MethodCall 分支 + `method_return_type` 函数；支持 `pool.tryPop().unwrap().handler()` 三段链路；修复 L-HANDLER-AWAIT-TYPE 在 `.wait()` on HandlerFuture 上的 false-positive（运行时 `.waitHandler()` 不存在） |
+| `${...}` 匿名 spawn body typer 验证 | ✅ | 已有 ThreadSpawn 分支正确设置 in_async 与 scope；新增 smoke 测试 `signal_wait_inside_shorthand_body_is_warned` |
+| spec-issues E 系列 6 条 | ✅ | Tessera-Spec README 新增 "规范维护约定" 一节：E-1 编号格式、E-2 Severity 边界、E-3 Rule/Rationale 版式、E-4 example-code 同源、E-5 顶部总览、E-6 跨文档锚点 |
+| example-code.md ← helloworld.tss | ✅ | example-code 替换为引言 + 特性映射表 + helloworld.tss 逐字代码 + 运行说明；E-4 同源约定落地 |
+
+### 第四轮测试规模
+
+| 套件 | 第三轮后 | 第四轮后 |
+|---|---:|---:|
+| tessera-interp integration | 36 | 36 |
+| tessera-lint smoke | 22 | **24** |
+| tessera-parser 单测 | 5 | 5 |
+| tessera-lexer 单测 | 5 | 5 |
+| **合计** | **68** | **70** |
+
+Lint pass 数 20（不变；L-HANDLER-AWAIT-TYPE 缩减为只检查反方向 false-positive 消失）。`cargo build --workspace --all-targets` 无 warning；`--check helloworld.tss` 与 `--check demo.tss` 均无诊断。
+
+### 全程总览（4 轮）
+
+| 轮次 | tessera-mvp commit | Tessera-Spec commit | 主要目的 |
+|---|---|---|---|
+| 1 | `2f7e075` | `da847c2` | 审计 + P0/P1 + A-1~A-5 + 7 个 lint pass |
+| 2 | `c559188` | `86d1a4d` | signal/contract 上下文 lint + 表达式 typer + R-SYNC-BREAK-3 + 内建函数 + B-1/2/7/9/12 |
+| 3 | `9542616`（含 chore `49c8424`） | `c695f00` | typer 深化 + 标准库 13 方法 + B 剩余 + C/D 系列 |
+| 4 | (本轮 chore `72c2ca6` + 主) | (本轮规范) | 收尾：typer method-call + ${} 验证 + E 系列 + example-code 同源 |
+
+测试规模 29 → 48 → 55 → 68 → **70**；Lint pass 9 → 16 → 20 → 20。
+
+### 收尾状态
+
+`docs/spec-issues.md` 与 `docs/spec-alignment.md` 中所有以"留作下一轮"标注的内容均已处理。剩余的为**深度设计性变更**，需独立立项：
+
+- R-SYNC-BREAK-3 字面延迟（协作单线程下不可严格实现，已在 R-SYNC-BREAK-3 Rationale 中正式承认）
+- 用户函数泛型（语言增量）
+- 标准库进一步扩展（HashSet、Channel、map/filter/reduce）
+- 跨文档锚点自动校验（CI 工具问题，非规范本身）
+
+---
+
 ## 第三轮修复总结（commit `c559188` 之后）
 
 | 工作项 | 状态 | 关键改动 |

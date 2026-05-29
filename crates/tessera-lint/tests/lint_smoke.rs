@@ -283,6 +283,38 @@ fn local_signal_wait_in_sync_is_ok() {
 }
 
 #[test]
+fn signal_wait_inside_shorthand_body_is_warned() {
+    // `${ ... }` body runs in an async context, so a `.wait()` on a local
+    // signal inside it should fire L-SIGNAL-WAIT-IN-ASYNC — same as inside
+    // a named-template handler.
+    let diags = run_lints(r#"
+        ${
+            let s: signal = signal();
+            s.wait();
+        };
+    "#);
+    assert!(has_rule(&diags, "L-SIGNAL-WAIT-IN-ASYNC"));
+}
+
+#[test]
+fn method_chain_handler_call_is_warned() {
+    // ScopedTyper now sees method-call return types, so a 3-step chain
+    // `pool.tryPop().unwrap().ping();` resolves the receiver of `.ping()` to
+    // `thread<Worker>` and the lint fires on the bare handler call.
+    let diags = run_lints(r#"
+        $template Worker() {
+            async handler ping(): void {}
+            async function __on_terminate__(): void {}
+        }
+        $Worker() { await keepalive(); } := w;
+        let pool: Queue<thread<Worker>> = Queue<thread<Worker>>();
+        pool.push(w);
+        pool.tryPop().unwrap().ping();
+    "#);
+    assert!(has_rule(&diags, "L-HANDLER-RESULT-IGNORED"));
+}
+
+#[test]
 fn field_chain_handler_call_is_warned() {
     // FieldAccess receiver — exercises the new lightweight typer.
     let diags = run_lints(r#"

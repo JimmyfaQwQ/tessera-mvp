@@ -92,30 +92,20 @@ impl<'e> Visitor for V<'e> {
     fn visit_expr(&mut self, e: &Expr) {
         if let Expr::MethodCall(m) = e {
             let recv_ty = self.typer.receiver_type(m);
-            match m.method.name.as_str() {
-                "wait" => {
-                    if matches!(recv_ty, Some(Type::HandlerFuture(_))) {
-                        self.diags.push(
-                            Diagnostic::error(
-                                "L-HANDLER-AWAIT-TYPE",
-                                "use .waitHandler() or .awaitHandler() on HandlerFuture, not .wait()",
-                                m.span,
-                            )
-                        );
-                    }
+            // The runtime only ships `.wait()` for both Future<T> and
+            // HandlerFuture<R>, so the lint only needs to catch the inverse
+            // mistake of calling the non-existent `.waitHandler()` /
+            // `.awaitHandler()` on a plain Future.
+            if matches!(m.method.name.as_str(), "waitHandler" | "awaitHandler") {
+                if matches!(recv_ty, Some(Type::Future(_))) {
+                    self.diags.push(
+                        Diagnostic::error(
+                            "L-HANDLER-AWAIT-TYPE",
+                            "`.waitHandler()` / `.awaitHandler()` is only valid on HandlerFuture; use `.wait()` or `await` on a Future",
+                            m.span,
+                        )
+                    );
                 }
-                "waitHandler" | "awaitHandler" => {
-                    if matches!(recv_ty, Some(Type::Future(_))) {
-                        self.diags.push(
-                            Diagnostic::error(
-                                "L-HANDLER-AWAIT-TYPE",
-                                "use .wait() or await on Future, not .waitHandler()/.awaitHandler()",
-                                m.span,
-                            )
-                        );
-                    }
-                }
-                _ => {}
             }
         }
         tessera_ast::visitor::walk_expr(self, e);

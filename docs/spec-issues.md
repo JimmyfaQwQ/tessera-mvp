@@ -38,7 +38,12 @@
 | D-4 expose_mutable 引用 | ✅ 已修订（第三轮） | `数据共享.md` R-EXPOSE-3 后补 D-4 修订 |
 | D-5 thread spawn 句法位置 | ✅ 已修订（第三轮） | `模板与线程.md §4.7` |
 | D-6 try 优先级 | ✅ 已修订（第三轮） | `错误与异常.md` `try expr` 介绍处补优先级说明 |
-| E-* 风格与一致性 | 🟡 未处理 | 留作下一轮（机械整理） |
+| E-1 编号格式 | ✅ 已修订（第四轮） | `Tessera-Spec/README.md` "规范维护约定" §编号格式 |
+| E-2 Lint Severity 边界 | ✅ 已修订（第四轮） | `Tessera-Spec/README.md` §Lint 严重级；权威源为 `crates/tessera-lint/src/passes/*.rs` |
+| E-3 Rule/Rationale 版式 | ✅ 已修订（第四轮） | `Tessera-Spec/README.md` §Rule/Rationale 版式；以 R-HANDLER-1 为示范 |
+| E-4 example-code 同源 | ✅ 已修订（第四轮） | `Tessera-Spec/example-code.md` 与 `tessera-mvp/helloworld.tss` 同源；由 cargo test + `--check` 守护 |
+| E-5 文档顶部总览 | ✅ 已修订（第四轮） | `Tessera-Spec/README.md` §文档顶部总览（约定，按需迁移） |
+| E-6 跨文档锚点 | ✅ 已修订（第四轮） | `Tessera-Spec/README.md` §跨文档锚点；CI 校验为后续工作 |
 
 ## 目录
 
