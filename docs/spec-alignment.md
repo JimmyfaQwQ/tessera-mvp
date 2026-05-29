@@ -2,7 +2,7 @@
 
 > **当前基准**：tessera-mvp 方向 1 Round 3 / Tessera-Spec `6c8548a`（2026-05-29）。`E:/tessera-mvp/` 实现 vs `E:/Tessera-Spec/` 规范的逐条对照。
 > 覆盖：tessera-lexer / tessera-parser / tessera-ast / tessera-types / tessera-runtime / tessera-interp / tessera-lint。
-> 测试：tessera-interp 44 integration + tessera-lint 41 smoke + tessera-types 5 typecheck + parser/lexer 各 5（合计 100）；Lint pass 26。`cargo build --workspace --all-targets` 无 warning；`--check helloworld.tss` / `demo.tss` 均无诊断。
+> 测试：tessera-interp 44 integration + tessera-lint 41 smoke + tessera-types 5 typecheck + parser/lexer 各 5（合计 100）；Lint pass 25。`cargo build --workspace --all-targets` 无 warning；`--check helloworld.tss` / `demo.tss` 均无诊断。
 >
 > **状态徽标**：✅ 已实现且有测试 ／ ⚠️ 已实现但缺测试或行为未完全覆盖 ／ ❌ 未实现 ／ 🔶 实现与规范存在语义偏差。
 >
@@ -38,9 +38,9 @@
 |---|---|---|
 | 解释器（lexer + parser + ast + runtime + interp） | 高度对齐 | `keepalive()` 永不返回语义缺独立验证测试；List/Map 跨线程使用缺领域级诊断（§14） |
 | 类型系统（tessera-types） | 大体对齐 | **用户函数泛型未实现**（`function f<T>(...)`，§11）；顶层自由函数体不参与类型检查（pre-existing gap，见 §10 注） |
-| Linter（tessera-lint） | 26 个 pass | 剩余未实现的 L 规则多需数据流分析（option/result unwrap、L-AWAIT-UNCONSUMED-FUTURE 等）或语义上不可 sound 静态化（详见 §12 未实现表的逐条原因）|
+| Linter（tessera-lint） | 25 个 pass | 剩余未实现的 L 规则多需数据流分析（option/result unwrap、L-AWAIT-UNCONSUMED-FUTURE 等）或语义上不可 sound 静态化（详见 §12 未实现表的逐条原因）|
 
-> 说明：spec-alignment 四轮 + 方向 1 Round 1/2/3 已落地全部 P0、绝大多数 P1，以及标准库 13 方法、4 类同步原语上下文 lint、`#exclusive`/同步原语相关规则、Round 3 的 4 条可 sound lint（return-type / void-return / expose 只读容器 / 泛型嵌套深度 / panic 滥用）+ 同块重复声明拒绝 + 补齐的测试缺口等。§1–§13 各表已逐行更新到当前状态。
+> 说明：spec-alignment 四轮 + 方向 1 Round 1/2/3 已落地全部 P0、绝大多数 P1，以及标准库 13 方法、4 类同步原语上下文 lint、`#exclusive`/同步原语相关规则、Round 3 的 5 条可 sound lint（return-type / void-return / expose 只读容器 / 泛型嵌套深度 / panic 滥用）+ 同块重复声明拒绝 + 补齐的测试缺口、并删除空占位 pass L-HANDLER-MUST-ASYNC（语法层强制）。§1–§13 各表已逐行更新到当前状态。
 
 
 ## 1. Tessera 核心语义
@@ -246,14 +246,13 @@
 
 ## 12. Linter 规则对照
 
-实现注册在 `crates/tessera-lint/src/passes/mod.rs::all()`，当前共 **26** 个 pass（权威列表以 `mod.rs::all()` 为准）。
+实现注册在 `crates/tessera-lint/src/passes/mod.rs::all()`，当前共 **25** 个 pass（权威列表以 `mod.rs::all()` 为准）。
 
-### 已实现（26）
+### 已实现（25）
 
 | 规则 ID | 文件 | 检查内容 | 状态 |
 |---|---|---|---|
 | L-AWAIT-ASYNC-ONLY | `passes/await_async_only.rs` | `await` 仅在 async 函数 / handler 内 | ✅ |
-| L-HANDLER-MUST-ASYNC | `passes/handler_must_async.rs` | handler 必须 async（语法已强制；pass 为空占位） | ✅（语法层）|
 | L-HANDLER-AWAIT-TYPE | `passes/handler_await_type.rs` | `.wait()` 不可用于 HandlerFuture；反之亦然 | ⚠️ 仅识别简单 Ident 接收者，未覆盖 field/method 链 |
 | L-EXPOSE-MUTABLE-UNSAFE | `passes/expose_mutable_unsafe.rs` | `expose_mutable` 字段类型必须并发安全 | ✅ |
 | L-GENERIC-TYPE-ARG-MISSING（+ COUNT）| `passes/generic_type_arg_missing.rs` | 容器泛型类型参个数检查 | ✅（兼覆盖 wrong-count）|
@@ -288,7 +287,7 @@
 | async/await | L-ASYNC-NO-AWAIT (Info) — **跳过**：合法的「无 await async 函数」（如 `await run()` 需 `run` 为 async）与冗余 async 不可静态区分，会误伤且破坏 `--check` 干净；L-AWAIT-EXPR-IN-TOPLEVEL — 顶层场景已由 L-TOPLEVEL-CONTROL-FLOW 覆盖 |
 | terminate | L-TERMINATE-FUTURE-IGNORED (Warn) — 需追踪 Future 消费 |
 | expose / define | L-EXPOSE-MUTABLE-ACCESS-PATTERN (Info)；L-DEFINE-IN-NON-TEMPLATE — **跳过**：`define` 仅在模板成员位置消费，他处为 parse 错误，parser 层已强制 |
-| handler | L-HANDLER-NO-AWAIT (Info)、L-HANDLER-CALL-SITE-AWAIT (Info)、L-HANDLER-DISPATCH-ERROR-UNHANDLED (Info)、L-HANDLER-FUTURE-MISUSE (Error；`L-HANDLER-AWAIT-TYPE` 已覆盖反方向) |
+| handler | L-HANDLER-MUST-ASYNC — **语法层强制**：`handler` 必须 `async` 由 parser 保证，无独立 pass（与 L-AT-TEMPLATE-STACKING 同处理；曾有空占位 pass，已删）；L-HANDLER-NO-AWAIT (Info)、L-HANDLER-CALL-SITE-AWAIT (Info)、L-HANDLER-DISPATCH-ERROR-UNHANDLED (Info)、L-HANDLER-FUTURE-MISUSE (Error；`L-HANDLER-AWAIT-TYPE` 已覆盖反方向) |
 | template | L-TEMPLATE-APPLY-CONTEXT — **跳过**：parser 无 `$` 表达式 primary，spawn 只能作语句（§4.7 许可所有语句位置），嵌入表达式即 parse 错误；L-AT-TEMPLATE-STACKING — 语法已防御 |
 | option/result | L-OPTION-UNWRAP-POSSIBLE-NONE、L-RESULT-UNWRAP-POSSIBLE-ERR — 需数据流分析 |
 | future | L-AWAIT-UNCONSUMED-FUTURE (Warn) — 需追踪 Future 消费 |
@@ -354,7 +353,7 @@
    - `rg "is_concurrent_safe" crates/` → 验证 §4 R-EXPOSE-2；
    - `rg "__on_terminate__" crates/tessera-interp/src/event_loop.rs` → 验证 §3 R-LIFE-2。
 2. **集成测试断言**：在仓库根运行 `cargo test -p tessera-interp`（44）与 `cargo test -p tessera-types`（5 typecheck）应全部通过；报告中标 ✅ 的条目对应的测试名可直接 grep 自 `crates/tessera-interp/tests/integration.rs` 与 `crates/tessera-types/tests/typecheck.rs`。
-3. **Linter 实装核对**：`crates/tessera-lint/src/passes/mod.rs::all()` 共 26 个 `Box::new(...)`，与 §12 已实现表完全对应。
+3. **Linter 实装核对**：`crates/tessera-lint/src/passes/mod.rs::all()` 共 25 个 `Box::new(...)`，与 §12 已实现表完全对应。
 4. **示例核对**：用 `E:/Tessera-Spec/example-code.md` 与 `helloworld.tss` / `demo.tss` / `tests/tss/*.tss` 比对 §13。
 
 ### 维护建议
@@ -363,7 +362,7 @@
 - **基线版本号**：报告顶部 commit 哈希需在每次主干合并后由作者更新（例如自动化脚本扫描 `git log -1 --format=%h`）。
 - **规范变更**：若 `E:/Tessera-Spec/*.md` 发生修订（即使是行号变化），需复核标 ✅ 的条目是否还和文档一致。
 - **TODO 跟踪**：§15 仍开放项建议拆为 GitHub Issue 跟踪，每条 close 时同步更新本报告。
-- **报告自身的测试**：CI 可加 `cargo test -p tessera-lint --tests` smoke check，确保 26 个 pass 与本报告一致。
+- **报告自身的测试**：CI 可加 `cargo test -p tessera-lint --tests` smoke check，确保 25 个 pass 与本报告一致。
 
 ---
 

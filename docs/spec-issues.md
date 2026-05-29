@@ -69,3 +69,4 @@
 | L-ASSERT-SIDE-EFFECT | ⏭️ 跳过 | Tessera 赋值是语句非表达式（`count++`/`x=5` 不可表达于 assert 条件），仅余调用，纯/非纯不可判定，会误伤 `assert(list.isEmpty())` 类合法写法。 |
 | 同块重复声明拒绝 | ✅ 落地 | `checker/stmts.rs::check_dup_lets`（let-vs-let，接入 `check_block`/scope 块/Pass 4）。规范 `语句与控制流规范草案.md §2.1.2` 已有定义，无需改规范。测试 `tessera-types/tests/typecheck.rs`。 |
 | 测试缺口（keepalive / expose_mutable 替换 / 短路 / example 3·8·9）| ✅ 补齐 | 见 `spec-alignment.md §3/§4/§8/§13`；`tests/tss/*.tss` + `integration.rs`。 |
+| 删除空占位 pass L-HANDLER-MUST-ASYNC | ✅ 清理 | 该 pass `return vec![]`（handler 必须 async 由语法强制），与代码库对"语法已防御"规则（L-AT-TEMPLATE-STACKING / L-DEFINE-IN-NON-TEMPLATE）"不写 pass、只在 §12 注明"的约定不一致。删除 pass，规则在 `Linter 规则草案.md §4` 补实现注记。Lint pass 26→25。 |

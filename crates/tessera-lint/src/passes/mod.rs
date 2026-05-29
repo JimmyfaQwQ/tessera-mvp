@@ -18,7 +18,6 @@ mod expose_readonly_write;
 mod generic_nesting_depth;
 mod generic_type_arg_missing;
 mod handler_await_type;
-mod handler_must_async;
 mod handler_ping_redefined;
 mod handler_result_ignored;
 mod hook_signature;
@@ -45,7 +44,6 @@ pub use expose_readonly_write::ExposeReadonlyWrite;
 pub use generic_nesting_depth::GenericNestingDepth;
 pub use generic_type_arg_missing::GenericTypeArgMissing;
 pub use handler_await_type::HandlerAwaitType;
-pub use handler_must_async::HandlerMustAsync;
 pub use handler_ping_redefined::HandlerPingRedefined;
 pub use handler_result_ignored::HandlerResultIgnored;
 pub use hook_signature::HookSignature;
@@ -67,7 +65,6 @@ use crate::LintPass;
 pub(crate) fn all() -> Vec<Box<dyn LintPass>> {
     vec![
         Box::new(AwaitAsyncOnly),
-        Box::new(HandlerMustAsync),
         Box::new(HandlerAwaitType),
         Box::new(ExposeMutableUnsafe),
         Box::new(ExposeReadonlyWrite),
