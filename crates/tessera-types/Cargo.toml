@@ -8,3 +8,7 @@ tessera-ast   = { path = "../tessera-ast" }
 indexmap      = { workspace = true }
 thiserror     = { workspace = true }
 miette        = { workspace = true }
+
+[dev-dependencies]
+tessera-lexer  = { path = "../tessera-lexer" }
+tessera-parser = { path = "../tessera-parser" }

@@ -89,6 +89,7 @@ impl<'e> TypeChecker<'e> {
 
     pub(super) fn check_block(&mut self, b: &Block) {
         self.env.push_scope();
+        self.check_dup_lets(&b.stmts);
         for s in &b.stmts { self.check_stmt(s); }
         self.env.pop_scope();
     }

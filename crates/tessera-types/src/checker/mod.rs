@@ -110,10 +110,15 @@ impl<'e> TypeChecker<'e> {
             }
         }
         // Pass 4: type-check top-level statements
-        for item in &prog.items {
-            if let TopLevelItem::Statement(s) = item {
-                self.check_stmt(s);
-            }
+        let top_stmts: Vec<&Stmt> = prog.items.iter()
+            .filter_map(|item| match item {
+                TopLevelItem::Statement(s) => Some(s),
+                _ => None,
+            })
+            .collect();
+        self.check_dup_lets(top_stmts.iter().copied());
+        for s in &top_stmts {
+            self.check_stmt(s);
         }
     }
 

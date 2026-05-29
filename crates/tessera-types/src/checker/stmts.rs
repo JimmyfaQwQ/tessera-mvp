@@ -1,6 +1,8 @@
 //! Statement type checking (used by both Pass 3 body checking and Pass 4
 //! top-level checking; the algorithm is the same in both contexts).
 
+use std::collections::HashSet;
+
 use tessera_ast::*;
 use crate::{Type, FuncContext};
 use indexmap::IndexMap;
@@ -8,6 +10,25 @@ use indexmap::IndexMap;
 use super::TypeChecker;
 
 impl<'e> TypeChecker<'e> {
+    /// Reject re-declaring the same name with `let` twice in the *same* block
+    /// (《语句与控制流规范草案 §3.3》: shadowing in a nested block is allowed,
+    /// re-declaration in the same block is not). This is a let-vs-let check over
+    /// a block's direct statements, so injected bindings (params, `self`, spawn
+    /// handles) are never falsely flagged.
+    pub(super) fn check_dup_lets<'s>(&mut self, stmts: impl IntoIterator<Item = &'s Stmt>) {
+        let mut seen: HashSet<&str> = HashSet::new();
+        for s in stmts {
+            if let Stmt::Let(l) = s {
+                if !seen.insert(l.name.name.as_str()) {
+                    self.env.error(
+                        format!("variable '{}' is already declared in this block", l.name.name),
+                        l.name.span,
+                    );
+                }
+            }
+        }
+    }
+
     pub(super) fn check_stmt(&mut self, s: &Stmt) {
         match s {
             Stmt::Let(l) => {
@@ -119,6 +140,7 @@ impl<'e> TypeChecker<'e> {
                 for (name, ty) in scope_bindings {
                     self.env.define(name, ty);
                 }
+                self.check_dup_lets(&sb.body.stmts);
                 for s in &sb.body.stmts { self.check_stmt(s); }
                 self.env.pop_scope();
             }
