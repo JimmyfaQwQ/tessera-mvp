@@ -560,6 +560,8 @@ dependencies = [
  "indexmap",
  "miette",
  "tessera-ast",
+ "tessera-lexer",
+ "tessera-parser",
  "thiserror",
 ]
 
