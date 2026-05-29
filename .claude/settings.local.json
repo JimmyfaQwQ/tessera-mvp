@@ -3,10 +3,5 @@
     "allow": [
       "PowerShell(Get-ChildItem \"E:\\\\tessera-mvp\\\\crates\\\\tessera-types\" -Recurse -ErrorAction Stop | ForEach-Object { $_.FullName })"
     ]
-  },
-  "spinnerTipsEnabled": false,
-  "statusLine": {
-    "type": "command",
-    "command": "powershell -NoProfile -NonInteractive -File \"C:/Users/Jimmy/.claude/statusline-command.ps1\""
   }
 }
