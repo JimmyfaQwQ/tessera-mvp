@@ -1,0 +1,28 @@
+// example-code §13 (3): Heartbeat — a non-terminatable thread (no
+// __on_terminate__) running an async tick loop with `asleep`. After three ticks
+// the body ends naturally (R-LIFE-1 → Terminated) and the exposed `ticks`
+// snapshot is stable.
+
+$template Heartbeat() {
+    expose ticks: int;
+
+    function __on_enter__(): void {
+        self.ticks = 0;
+    }
+
+    async function run(): void {
+        let i: int = 0;
+        while (i < 3) {
+            await asleep(5);
+            self.ticks = self.ticks + 1;
+            i = i + 1;
+        }
+    }
+}
+
+$Heartbeat() { await run(); } := hb;
+
+asleep(200);
+
+let t: int = hb.ticks;
+assert(t == 3);

@@ -1,0 +1,28 @@
+// R-KEEPALIVE-1: `await keepalive()` returns a Future that never completes, so
+// any code after it in the thread body must never run. `reached` stays false
+// while the thread is alive; terminate() still works (R-KEEPALIVE-2: terminate
+// is driven by the hook, not by the suspended body).
+
+$template Keeper() {
+    expose reached: bool;
+
+    function __on_enter__(): void {
+        self.reached = false;
+    }
+
+    async function __on_terminate__(): void {}
+
+    async function run(): void {
+        await keepalive();
+        self.reached = true;   // unreachable: keepalive() never returns
+    }
+}
+
+$Keeper() { await run(); } := k;
+
+asleep(50);
+
+let r: bool = k.reached;
+assert(!r);
+
+k.terminate().wait();

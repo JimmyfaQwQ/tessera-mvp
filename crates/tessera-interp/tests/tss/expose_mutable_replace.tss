@@ -1,0 +1,19 @@
+// R-EXPOSE-3 / D-4: an `expose_mutable` field exposes the concurrency-safe
+// object for mutation via its own methods, but the field *reference* cannot be
+// replaced from outside. Assigning a new value through the handle must raise
+// ExposeMutableFieldReplace rather than silently swap the reference.
+
+$template Holder() {
+    expose_mutable cell: locked<int>;
+
+    function __on_enter__(): void {
+        self.cell = locked(0);
+    }
+
+    async function __on_terminate__(): void {}
+}
+
+$Holder() { await keepalive(); } := h;
+
+// Illegal: replacing the expose_mutable field reference from outside.
+h.cell = locked(5);

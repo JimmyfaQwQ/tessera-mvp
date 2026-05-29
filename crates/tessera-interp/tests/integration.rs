@@ -409,3 +409,59 @@ async fn test_target_terminated_kind() {
         assert(e.kind == "TargetTerminated");
     "#);
 }
+
+// ── R-KEEPALIVE-1: keepalive() never returns ─────────────────────────────────
+
+// The statement after `await keepalive()` must never run; `reached` stays false
+// while the thread is alive, and terminate() still cleans it up (R-KEEPALIVE-2).
+#[tokio::test]
+async fn test_keepalive_never_returns() {
+    let src = tss("keepalive_never_returns");
+    assert_runs_ok!(&src);
+}
+
+// ── R-EXPOSE-3 / D-4: expose_mutable field reference cannot be replaced ───────
+
+#[tokio::test]
+async fn test_expose_mutable_field_replace_rejected() {
+    let src = tss("expose_mutable_replace");
+    let err = assert_runs_err!(&src);
+    assert!(
+        matches!(err, RuntimeError::ExposeMutableFieldReplace { .. }),
+        "expected ExposeMutableFieldReplace, got: {err}",
+    );
+}
+
+// ── example-code §13 coverage: Heartbeat / top-level async fn / try-await error
+
+#[tokio::test]
+async fn test_heartbeat() {
+    let src = tss("heartbeat");
+    assert_runs_ok!(&src);
+}
+
+#[tokio::test]
+async fn test_async_toplevel_func() {
+    let src = tss("async_toplevel_func");
+    assert_runs_ok!(&src);
+}
+
+#[tokio::test]
+async fn test_try_await_error() {
+    let src = tss("try_await_error");
+    assert_runs_ok!(&src);
+}
+
+// ── §2.1: `&&` / `||` short-circuit — the RHS is not evaluated ────────────────
+
+// If the RHS were evaluated, `1 / 0` would raise DivisionByZero and the program
+// would error. Short-circuiting means it is never reached.
+#[tokio::test]
+async fn test_short_circuit_and_skips_rhs() {
+    assert_runs_ok!("let b: bool = false && (1 / 0 == 0); assert(!b);");
+}
+
+#[tokio::test]
+async fn test_short_circuit_or_skips_rhs() {
+    assert_runs_ok!("let b: bool = true || (1 / 0 == 0); assert(b);");
+}

@@ -1,0 +1,19 @@
+// example-code §13 (9): try/await error handling. Dispatching a handler to a
+// terminated thread fails; `try await` captures it as Result<T, error> instead
+// of crashing the caller, and the error's `.kind` is "TargetTerminated"
+// (§3.4 / B-9).
+
+$template Svc() {
+    async function __on_terminate__(): void {}
+    async handler ping_me(): String { return "ok"; }
+}
+
+$Svc() { await keepalive(); } := h;
+
+h.terminate().wait();
+
+let r: Result<String, error> = try await h.ping_me();
+assert(r.isErr());
+
+let e: error = r.unwrapErr();
+assert(e.kind == "TargetTerminated");

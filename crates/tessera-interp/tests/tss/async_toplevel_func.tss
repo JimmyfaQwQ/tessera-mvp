@@ -1,0 +1,11 @@
+// example-code §13 (8): a top-level `async function` (the closeBusLater()
+// analog). Calling it returns a Future<T>; from the sync top level it is
+// resolved with `.wait()`.
+
+async function compute(x: int): int {
+    await asleep(5);
+    return x + 1;
+}
+
+let result: int = compute(41).wait();
+assert(result == 42);
