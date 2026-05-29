@@ -101,12 +101,13 @@ impl<'e> TypeChecker<'e> {
                 TopLevelItem::FuncDef(_) | TopLevelItem::Statement(_) => {}
             }
         }
-        // Pass 3: type-check template member bodies
+        // Pass 3: type-check template member bodies and top-level free functions
         for item in &prog.items {
             match item {
                 TopLevelItem::ScopeTemplateDecl(d) => self.check_scope_template_bodies(d),
                 TopLevelItem::ThreadTemplateDecl(d) => self.check_thread_template_bodies(d),
-                TopLevelItem::FuncDef(_) | TopLevelItem::Statement(_) => {}
+                TopLevelItem::FuncDef(f) => self.check_func_body(f, &[]),
+                TopLevelItem::Statement(_) => {}
             }
         }
         // Pass 4: type-check top-level statements

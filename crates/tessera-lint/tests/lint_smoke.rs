@@ -545,3 +545,42 @@ fn bare_return_in_thread_body_is_ok() {
     "#);
     assert!(!has_rule(&diags, "L-VOID-RETURN-VALUE"));
 }
+
+// ── L-AT-TEMPLATE-PARAM-MISMATCH ─────────────────────────────────────────────
+
+#[test]
+fn too_few_template_args_is_warned() {
+    let diags = run_lints(r#"
+        $template W(a: int, b: int) { async function __on_terminate__(): void {} }
+        $W(1) { await keepalive(); } := h;
+    "#);
+    assert!(has_rule(&diags, "L-AT-TEMPLATE-PARAM-MISMATCH"));
+}
+
+#[test]
+fn too_many_template_args_is_warned() {
+    let diags = run_lints(r#"
+        @template C(label: String) { function __on_enter__(): void {} }
+        @C("a", "b") { let x: int = 1; }
+    "#);
+    assert!(has_rule(&diags, "L-AT-TEMPLATE-PARAM-MISMATCH"));
+}
+
+#[test]
+fn correct_template_arg_count_is_ok() {
+    let diags = run_lints(r#"
+        $template W(a: int, b: int) { async function __on_terminate__(): void {} }
+        $W(1, 2) { await keepalive(); } := h;
+    "#);
+    assert!(!has_rule(&diags, "L-AT-TEMPLATE-PARAM-MISMATCH"));
+}
+
+#[test]
+fn default_param_allows_omission() {
+    // `b` has a default, so 1 arg is within [1..=2] — must not fire.
+    let diags = run_lints(r#"
+        $template W(a: int, b: int = 0) { async function __on_terminate__(): void {} }
+        $W(1) { await keepalive(); } := h;
+    "#);
+    assert!(!has_rule(&diags, "L-AT-TEMPLATE-PARAM-MISMATCH"));
+}

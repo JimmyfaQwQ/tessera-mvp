@@ -77,3 +77,54 @@ fn let_shadowing_param_is_ok() {
     "#);
     assert!(!has_dup(&diags), "let shadowing a param must be allowed, got: {diags:?}");
 }
+
+// ── §2: template param / field name collision (shared self. namespace) ───────
+
+fn has_collision(diags: &[String]) -> bool {
+    diags.iter().any(|m| m.contains("declared more than once in this template"))
+}
+
+#[test]
+fn template_param_field_collision_is_rejected() {
+    let diags = diagnostics(r#"
+        $template W(x: int) {
+            expose x: int;
+            async function __on_terminate__(): void {}
+        }
+    "#);
+    assert!(has_collision(&diags), "expected param/field collision error, got: {diags:?}");
+}
+
+#[test]
+fn scope_template_define_param_collision_is_rejected() {
+    let diags = diagnostics(r#"
+        @template C(n: int) {
+            define n: int = 0;
+        }
+    "#);
+    assert!(has_collision(&diags), "expected collision error, got: {diags:?}");
+}
+
+#[test]
+fn distinct_param_and_field_names_are_ok() {
+    let diags = diagnostics(r#"
+        $template W(initial: int) {
+            expose count: int;
+            async function __on_terminate__(): void {}
+        }
+    "#);
+    assert!(!has_collision(&diags), "distinct names must be allowed, got: {diags:?}");
+}
+
+// ── B1: top-level free-function bodies are now type-checked (Pass 3) ─────────
+
+#[test]
+fn duplicate_let_in_free_function_body_is_rejected() {
+    let diags = diagnostics(r#"
+        function f(): void {
+            let y: int = 1;
+            let y: int = 2;
+        }
+    "#);
+    assert!(has_dup(&diags), "free-function bodies are now checked, got: {diags:?}");
+}

@@ -8,9 +8,42 @@ use indexmap::IndexMap;
 use super::TypeChecker;
 
 impl<'e> TypeChecker<'e> {
+    /// Template params and fields (`expose`/`expose_mutable`/`define`) share the
+    /// `self.name` namespace (《模板与线程规范 §2》), so the same name must not be
+    /// declared twice across them. `field_idents` is given in declaration order;
+    /// params are considered first. The second (and later) declaration of any
+    /// name is reported.
+    fn check_self_namespace_collisions(&mut self, params: &[Param], field_idents: &[&Ident]) {
+        use std::collections::HashSet;
+        let mut seen: HashSet<&str> = HashSet::new();
+        for p in params {
+            if !seen.insert(p.name.name.as_str()) {
+                self.env.error(
+                    format!("'{}' is declared more than once in this template (parameter / field names share the `self.` namespace)", p.name.name),
+                    p.name.span,
+                );
+            }
+        }
+        for f in field_idents {
+            if !seen.insert(f.name.as_str()) {
+                self.env.error(
+                    format!("'{}' is declared more than once in this template (parameter / field names share the `self.` namespace)", f.name),
+                    f.span,
+                );
+            }
+        }
+    }
+
     pub(super) fn register_scope_template(&mut self, d: &ScopeTemplateDecl) {
         let name = d.name.as_ref().map(|i| i.name.clone()).unwrap_or_default();
         if name.is_empty() { return; }
+        let field_idents: Vec<&Ident> = d.members.iter()
+            .filter_map(|m| match m {
+                ScopeTemplateMember::Define(e) => Some(&e.name),
+                _ => None,
+            })
+            .collect();
+        self.check_self_namespace_collisions(&d.params, &field_idents);
         let params = d.params.iter().map(|p| (p.name.name.clone(), self.resolve_type(&p.ty))).collect();
         let mut define_fields = IndexMap::new();
         for m in &d.members {
@@ -32,6 +65,15 @@ impl<'e> TypeChecker<'e> {
     pub(super) fn register_thread_template(&mut self, d: &ThreadTemplateDecl) {
         let name = d.name.as_ref().map(|i| i.name.clone()).unwrap_or_default();
         if name.is_empty() { return; }
+        let field_idents: Vec<&Ident> = d.members.iter()
+            .filter_map(|m| match m {
+                ThreadTemplateMember::Expose(e)
+                | ThreadTemplateMember::ExposeMutable(e)
+                | ThreadTemplateMember::Define(e) => Some(&e.name),
+                _ => None,
+            })
+            .collect();
+        self.check_self_namespace_collisions(&d.params, &field_idents);
         let params = d.params.iter().map(|p| (p.name.name.clone(), self.resolve_type(&p.ty))).collect();
         let mut expose_fields = IndexMap::new();
         let mut handlers = IndexMap::new();

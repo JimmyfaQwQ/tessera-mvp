@@ -29,6 +29,7 @@ mod return_not_all_paths;
 mod return_type_mismatch;
 mod signal_await_in_sync;
 mod signal_wait_in_async;
+mod template_param_mismatch;
 mod terminate_non_terminatable;
 mod toplevel_control_flow;
 mod void_return_value;
@@ -55,6 +56,7 @@ pub use return_not_all_paths::ReturnNotAllPaths;
 pub use return_type_mismatch::ReturnTypeMismatch;
 pub use signal_await_in_sync::SignalAwaitInSync;
 pub use signal_wait_in_async::SignalWaitInAsync;
+pub use template_param_mismatch::TemplateParamMismatch;
 pub use terminate_non_terminatable::TerminateNonTerminatable;
 pub use toplevel_control_flow::ToplevelControlFlow;
 pub use void_return_value::VoidReturnValue;
@@ -89,5 +91,6 @@ pub(crate) fn all() -> Vec<Box<dyn LintPass>> {
         Box::new(VoidReturnValue),
         Box::new(ExposeReadonlyContainer),
         Box::new(GenericNestingDepth),
+        Box::new(TemplateParamMismatch),
     ]
 }
