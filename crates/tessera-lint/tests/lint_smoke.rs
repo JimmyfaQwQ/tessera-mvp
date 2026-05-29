@@ -404,3 +404,120 @@ fn await_other_threads_primitive_in_exclusive_is_ok() {
     "#);
     assert!(!has_rule(&diags, "L-EXCL-AWAIT"));
 }
+
+// ── L-RETURN-TYPE-MISMATCH ───────────────────────────────────────────────────
+
+#[test]
+fn bare_return_in_value_function_is_rejected() {
+    let diags = run_lints("function f(): int { return; }");
+    assert!(has_rule(&diags, "L-RETURN-TYPE-MISMATCH"));
+}
+
+#[test]
+fn literal_return_type_mismatch_is_rejected() {
+    let diags = run_lints(r#"function g(): int { return "nope"; }"#);
+    assert!(has_rule(&diags, "L-RETURN-TYPE-MISMATCH"));
+}
+
+#[test]
+fn matching_literal_return_is_ok() {
+    let diags = run_lints("function f(): int { return 5; }");
+    assert!(!has_rule(&diags, "L-RETURN-TYPE-MISMATCH"));
+}
+
+#[test]
+fn int_literal_for_double_return_is_ok() {
+    // The language tolerates the int ⇆ double coercion, so this must not fire.
+    let diags = run_lints("function f(): double { return 5; }");
+    assert!(!has_rule(&diags, "L-RETURN-TYPE-MISMATCH"));
+}
+
+#[test]
+fn non_literal_return_is_not_judged() {
+    // A non-literal expression's type is left to the type checker; the lint
+    // must stay silent to remain sound (zero false positives).
+    let diags = run_lints(r#"function f(): String { return "a" + "b"; }"#);
+    assert!(!has_rule(&diags, "L-RETURN-TYPE-MISMATCH"));
+}
+
+// ── L-VOID-RETURN-VALUE ──────────────────────────────────────────────────────
+
+#[test]
+fn returning_value_from_void_is_rejected() {
+    let diags = run_lints("function f(): void { return 1; }");
+    assert!(has_rule(&diags, "L-VOID-RETURN-VALUE"));
+}
+
+#[test]
+fn bare_return_in_void_is_ok() {
+    let diags = run_lints("function f(): void { return; }");
+    assert!(!has_rule(&diags, "L-VOID-RETURN-VALUE"));
+    assert!(!has_rule(&diags, "L-RETURN-TYPE-MISMATCH"));
+}
+
+// ── L-EXPOSE-READONLY-CONTAINER ──────────────────────────────────────────────
+
+#[test]
+fn expose_readonly_list_is_flagged() {
+    let diags = run_lints(r#"
+        $template W() {
+            expose items: List<int>;
+            async function __on_terminate__(): void {}
+        }
+    "#);
+    assert!(has_rule(&diags, "L-EXPOSE-READONLY-CONTAINER"));
+}
+
+#[test]
+fn expose_readonly_scalar_is_ok() {
+    let diags = run_lints(r#"
+        $template W() {
+            expose count: int;
+            expose handle: locked<int>;
+            async function __on_terminate__(): void {}
+        }
+    "#);
+    assert!(!has_rule(&diags, "L-EXPOSE-READONLY-CONTAINER"));
+}
+
+// ── L-GENERIC-NESTING-DEPTH ──────────────────────────────────────────────────
+
+#[test]
+fn deeply_nested_generic_is_flagged() {
+    let diags = run_lints("function f(x: List<List<List<List<int>>>>): void {}");
+    assert!(has_rule(&diags, "L-GENERIC-NESTING-DEPTH"));
+}
+
+#[test]
+fn shallow_generic_is_ok() {
+    // `List<List<int>>` is depth 3 — at the threshold, not over it.
+    let diags = run_lints("function f(x: List<List<int>>): void {}");
+    assert!(!has_rule(&diags, "L-GENERIC-NESTING-DEPTH"));
+}
+
+// ── L-PANIC-OVERUSE ──────────────────────────────────────────────────────────
+
+#[test]
+fn many_panics_in_one_function_is_flagged() {
+    let diags = run_lints(r#"
+        function f(c: int): int {
+            if (c == 0) { panic("a"); }
+            if (c == 1) { panic("b"); }
+            if (c == 2) { panic("c"); }
+            if (c == 3) { panic("d"); }
+            return c;
+        }
+    "#);
+    assert!(has_rule(&diags, "L-PANIC-OVERUSE"));
+}
+
+#[test]
+fn few_panics_in_one_function_is_ok() {
+    let diags = run_lints(r#"
+        function f(c: int): int {
+            if (c == 0) { panic("a"); }
+            return c;
+        }
+    "#);
+    assert!(!has_rule(&diags, "L-PANIC-OVERUSE"));
+}

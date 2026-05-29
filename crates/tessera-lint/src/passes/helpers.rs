@@ -1,4 +1,4 @@
-use tessera_ast::{Expr, TypeExpr};
+use tessera_ast::*;
 use tessera_types::{Type, TypeEnv};
 
 /// Resolve a syntactic type expression into the semantic `Type` used by the
@@ -115,6 +115,90 @@ pub(crate) fn infer_expr_type(env: &TypeEnv, e: &Expr) -> Option<Type> {
         },
 
         _ => None,
+    }
+}
+
+/// Visit every top-level *function-like unit* (free functions, scope/thread
+/// template member functions, lifecycle hooks, and handlers), calling `f` with
+/// the unit's declared return type and body. Anonymous templates nested inside
+/// statements are not visited — passes built on this stay sound (they simply
+/// lint fewer sites) and mirror `return_not_all_paths`'s coverage.
+pub(crate) fn each_function(program: &Program, f: &mut impl FnMut(&TypeExpr, &Block)) {
+    for item in &program.items {
+        match item {
+            TopLevelItem::FuncDef(fd) => f(&fd.return_type, &fd.body),
+            TopLevelItem::ScopeTemplateDecl(d) => {
+                for m in &d.members {
+                    match m {
+                        ScopeTemplateMember::OnEnter(fd)
+                        | ScopeTemplateMember::OnExit(fd)
+                        | ScopeTemplateMember::MemberFunc(fd) => f(&fd.return_type, &fd.body),
+                        ScopeTemplateMember::Define(_) => {}
+                    }
+                }
+            }
+            TopLevelItem::ThreadTemplateDecl(d) => {
+                for m in &d.members {
+                    match m {
+                        ThreadTemplateMember::OnEnter(fd)
+                        | ThreadTemplateMember::OnExit(fd)
+                        | ThreadTemplateMember::OnTerminate(fd)
+                        | ThreadTemplateMember::MemberFunc(fd) => f(&fd.return_type, &fd.body),
+                        ThreadTemplateMember::Handler(h) => f(&h.return_type, &h.body),
+                        _ => {}
+                    }
+                }
+            }
+            TopLevelItem::Statement(_) => {}
+        }
+    }
+}
+
+/// Visit every `return` statement reachable from `block` *within the same
+/// function/handler execution context* — recursing through control-flow,
+/// scope, and `#exclusive` blocks, but never descending into nested
+/// thread-spawn bodies (those run in a different thread with their own return
+/// context, governed by the top-level / spawn-body rules instead).
+pub(crate) fn each_return(block: &Block, f: &mut impl FnMut(&ReturnStmt)) {
+    for s in &block.stmts {
+        each_return_stmt(s, f);
+    }
+}
+
+fn each_return_stmt(s: &Stmt, f: &mut impl FnMut(&ReturnStmt)) {
+    match s {
+        Stmt::Return(r) => f(r),
+        Stmt::If(i) => each_return_if(i, f),
+        Stmt::While(w) => each_return(&w.body, f),
+        Stmt::For(fo) => {
+            if let Some(init) = &fo.init { each_return_stmt(init, f); }
+            if let Some(upd) = &fo.update { each_return_stmt(upd, f); }
+            each_return(&fo.body, f);
+        }
+        Stmt::ScopeBlock(sb) => each_return(&sb.body, f),
+        Stmt::ExclusiveBlock(eb) => each_return(&eb.body, f),
+        // ThreadSpawn body runs in a different thread context — skip it.
+        _ => {}
+    }
+}
+
+fn each_return_if(i: &IfStmt, f: &mut impl FnMut(&ReturnStmt)) {
+    each_return(&i.then_block, f);
+    match &i.else_branch {
+        Some(ElseBranch::Else(b)) => each_return(b, f),
+        Some(ElseBranch::ElseIf(i2)) => each_return_if(i2, f),
+        None => {}
+    }
+}
+
+/// Nesting depth of a type expression: a leaf (no type args) is depth 1, and a
+/// constructor's depth is `1 + max(depth(arg))`. Used by L-GENERIC-NESTING-DEPTH.
+pub(crate) fn type_expr_depth(te: &TypeExpr) -> usize {
+    match te {
+        TypeExpr::Void | TypeExpr::Never => 1,
+        TypeExpr::Named(_, args) => {
+            1 + args.iter().map(type_expr_depth).max().unwrap_or(0)
+        }
     }
 }
 
