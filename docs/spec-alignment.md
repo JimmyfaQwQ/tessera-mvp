@@ -10,6 +10,36 @@
 > - ❌ 完全未实现
 > - 🔶 实现与规范存在语义偏差，需修复或修订规范
 
+## 第二轮修复总结（commit `2f7e075` 之后）
+
+| 工作项 | 状态 | 关键改动 |
+|---|---|---|
+| signal / contract 同步/异步 lint | ✅ | 新增 4 个 pass：`signal_await_in_sync.rs` / `signal_wait_in_async.rs` / `contract_await_in_sync.rs` / `contract_wait_in_async.rs`；smoke 测试 5 例 |
+| Lint 轻量表达式 typer | ✅ | `passes/helpers.rs::infer_expr_type` 覆盖 Ident / FieldAccess / TypeCtor；`handler_await_type.rs` 与 `handler_result_ignored.rs` 切换到新 typer；新增 field-chain handler-call smoke 测试 |
+| 内建函数规范章节 | ✅ | `标准容器与常用类型规范草案.md §12` 权威列出 print/println/asleep/keepalive/getchar/signal/contract/permit/locked 签名 |
+| spec-issues B 类（B-1 / B-2 / B-7 / B-9 / B-12） | ✅ | 5 处规范文本修订：int 溢出 wrap-around、char 转义表、`#exclusive` reentrant 嵌套、`Err("kind")` 语法糖、顶层 sync 上下文 |
+| R-SYNC-BREAK-3 runtime + 测试 | ✅ | `eval/builtin.rs::delay_broken_until_exclusive_ends` best-effort 实现；`tests/tss/exclusive_broken_wait.tss` 验证 no-deadlock；同步原语规范 R-SYNC-BREAK-3 加 Rationale |
+
+### 第二轮测试规模
+
+| 套件 | 第一轮后 | 第二轮后 |
+|---|---:|---:|
+| tessera-interp integration | 27 | 28 |
+| tessera-lint smoke | 11 | 17 |
+| tessera-parser 单测 | 5 | 5 |
+| tessera-lexer 单测 | 5 | 5 |
+| **合计** | **48** | **55** |
+
+Lint pass 数 16 → 20。`cargo build --workspace --all-targets` 无 warning；`--check helloworld.tss` 与 `demo.tss` 均无诊断。
+
+### 已知保留缺口（继续记入 P2）
+
+- L-HANDLER-AWAIT-TYPE / L-HANDLER-RESULT-IGNORED 仍依赖 typer 能查到 receiver 类型；**局部变量**（函数 / handler body 内的 let）在 type-check 完成后从 env 弹出，因此对纯 local handle 的 fire-and-forget 仍是盲区。需要的话可在 typer 中加一个"扫 enclosing scope 内 let 的 init"的 fallback。
+- R-SYNC-BREAK-3 的字面"延迟"在协作单线程下无法严格实现，已通过 Rationale 在规范侧澄清。
+- spec-issues B-3 / B-4 / B-5 / B-6 / B-8 / B-10 / B-11 留作下一轮。
+
+---
+
 ## 本次修复总结（自初始审计以来）
 
 下列条目已在本轮修复中处理并附测试：

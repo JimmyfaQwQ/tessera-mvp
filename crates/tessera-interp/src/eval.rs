@@ -926,37 +926,47 @@ impl Interpreter {
                         location: a.span,
                     }),
             },
-            // `await s` — panics if signal is broken
+            // `await s` — panics if signal is broken (R-SYNC-BREAK-3: defer
+            // broken delivery until #exclusive ends if we're inside one).
             Value::Signal(s) => {
                 match s.wait().await {
                     Ok(()) => Ok(Value::Void),
-                    Err(r) => Err(RuntimeError::Structured {
-                        kind: r.as_str().into(),
-                        message: format!("signal broken: {}", r.as_str()),
-                        location: a.span,
-                    }),
+                    Err(r) => {
+                        self.delay_broken_until_exclusive_ends().await;
+                        Err(RuntimeError::Structured {
+                            kind: r.as_str().into(),
+                            message: format!("signal broken: {}", r.as_str()),
+                            location: a.span,
+                        })
+                    }
                 }
             }
-            // `await c` — panics if contract is broken
+            // `await c` — panics if contract is broken (R-SYNC-BREAK-3).
             Value::Contract(c) => {
                 match c.wait().await {
                     Ok(()) => Ok(Value::Void),
-                    Err(r) => Err(RuntimeError::Structured {
-                        kind: r.as_str().into(),
-                        message: format!("contract broken: {}", r.as_str()),
-                        location: a.span,
-                    }),
+                    Err(r) => {
+                        self.delay_broken_until_exclusive_ends().await;
+                        Err(RuntimeError::Structured {
+                            kind: r.as_str().into(),
+                            message: format!("contract broken: {}", r.as_str()),
+                            location: a.span,
+                        })
+                    }
                 }
             }
-            // `await p` — panics if permit is broken
+            // `await p` — panics if permit is broken (R-SYNC-BREAK-3).
             Value::Permit(p) => {
                 match p.acquire().await {
                     Ok(()) => Ok(Value::Void),
-                    Err(r) => Err(RuntimeError::Structured {
-                        kind: r.as_str().into(),
-                        message: format!("permit broken: {}", r.as_str()),
-                        location: a.span,
-                    }),
+                    Err(r) => {
+                        self.delay_broken_until_exclusive_ends().await;
+                        Err(RuntimeError::Structured {
+                            kind: r.as_str().into(),
+                            message: format!("permit broken: {}", r.as_str()),
+                            location: a.span,
+                        })
+                    }
                 }
             }
             other => Ok(other),

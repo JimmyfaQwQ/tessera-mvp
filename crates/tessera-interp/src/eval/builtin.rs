@@ -268,11 +268,14 @@ impl Interpreter {
             ("wait",     Value::Signal(s)) => {
                 match s.wait().await {
                     Ok(()) => Ok(Value::Void),
-                    Err(r) => Err(RuntimeError::Structured {
-                        kind: r.as_str().into(),
-                        message: format!("signal broken: {}", r.as_str()),
-                        location: m.span,
-                    }),
+                    Err(r) => {
+                        self.delay_broken_until_exclusive_ends().await;
+                        Err(RuntimeError::Structured {
+                            kind: r.as_str().into(),
+                            message: format!("signal broken: {}", r.as_str()),
+                            location: m.span,
+                        })
+                    }
                 }
             }
 
@@ -284,11 +287,14 @@ impl Interpreter {
             ("wait",      Value::Contract(c)) => {
                 match c.wait().await {
                     Ok(()) => Ok(Value::Void),
-                    Err(r) => Err(RuntimeError::Structured {
-                        kind: r.as_str().into(),
-                        message: format!("contract broken: {}", r.as_str()),
-                        location: m.span,
-                    }),
+                    Err(r) => {
+                        self.delay_broken_until_exclusive_ends().await;
+                        Err(RuntimeError::Structured {
+                            kind: r.as_str().into(),
+                            message: format!("contract broken: {}", r.as_str()),
+                            location: m.span,
+                        })
+                    }
                 }
             }
 
@@ -319,11 +325,14 @@ impl Interpreter {
             ("wait",   Value::Permit(p)) => {
                 match p.acquire().await {
                     Ok(()) => Ok(Value::Void),
-                    Err(r) => Err(RuntimeError::Structured {
-                        kind: r.as_str().into(),
-                        message: format!("permit broken: {}", r.as_str()),
-                        location: m.span,
-                    }),
+                    Err(r) => {
+                        self.delay_broken_until_exclusive_ends().await;
+                        Err(RuntimeError::Structured {
+                            kind: r.as_str().into(),
+                            message: format!("permit broken: {}", r.as_str()),
+                            location: m.span,
+                        })
+                    }
                 }
             }
 
@@ -344,6 +353,34 @@ impl Interpreter {
             .as_ref()
             .map(|arc| arc.id)
             .unwrap_or(0)
+    }
+
+    /// R-SYNC-BREAK-3 best-effort delay.
+    ///
+    /// The rule nominally requires deferring Broken delivery until the
+    /// waiter's `#exclusive` block ends, but the common case — `await sig`
+    /// where the wait is the SOLE suspension source inside the block — would
+    /// deadlock if we genuinely held until `exclusive_mode → false`, since
+    /// the block can't progress past the wait while we're holding it.
+    ///
+    /// The cooperative-runtime compromise: yield a handful of times so any
+    /// genuinely pending continuation (rare, but real when the `#exclusive`
+    /// has more work queued after the wait) gets a chance to run, then
+    /// deliver Broken regardless. Clause 2 of the rule — "successful waits
+    /// inside the block are not retroactively reverted" — is already
+    /// satisfied at the primitive level (signal/contract drain pending state
+    /// before checking `broken`).
+    pub(super) async fn delay_broken_until_exclusive_ends(&self) {
+        let state = self.0.current_thread_state.borrow().clone();
+        let Some(state) = state else { return };
+        if !state.exclusive_mode() { return; }
+
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
+            if !state.exclusive_mode() { return; }
+        }
+        // Give up: refusing to deliver Broken would deadlock the
+        // sole-suspension case.
     }
 }
 

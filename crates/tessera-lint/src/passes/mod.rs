@@ -7,6 +7,8 @@
 mod helpers;
 
 mod await_async_only;
+mod contract_await_in_sync;
+mod contract_wait_in_async;
 mod define_external_access;
 mod expose_mutable_unsafe;
 mod expose_readonly_write;
@@ -20,10 +22,14 @@ mod permit_await_in_sync;
 mod permit_release_non_positive;
 mod permit_wait_in_async;
 mod return_not_all_paths;
+mod signal_await_in_sync;
+mod signal_wait_in_async;
 mod terminate_non_terminatable;
 mod toplevel_control_flow;
 
 pub use await_async_only::AwaitAsyncOnly;
+pub use contract_await_in_sync::ContractAwaitInSync;
+pub use contract_wait_in_async::ContractWaitInAsync;
 pub use define_external_access::DefineExternalAccess;
 pub use expose_mutable_unsafe::ExposeMutableUnsafe;
 pub use expose_readonly_write::ExposeReadonlyWrite;
@@ -37,6 +43,8 @@ pub use permit_await_in_sync::PermitAwaitInSync;
 pub use permit_release_non_positive::PermitReleaseNonPositive;
 pub use permit_wait_in_async::PermitWaitInAsync;
 pub use return_not_all_paths::ReturnNotAllPaths;
+pub use signal_await_in_sync::SignalAwaitInSync;
+pub use signal_wait_in_async::SignalWaitInAsync;
 pub use terminate_non_terminatable::TerminateNonTerminatable;
 pub use toplevel_control_flow::ToplevelControlFlow;
 
@@ -56,6 +64,10 @@ pub(crate) fn all() -> Vec<Box<dyn LintPass>> {
         Box::new(PermitAwaitInSync),
         Box::new(PermitWaitInAsync),
         Box::new(PermitReleaseNonPositive),
+        Box::new(SignalAwaitInSync),
+        Box::new(SignalWaitInAsync),
+        Box::new(ContractAwaitInSync),
+        Box::new(ContractWaitInAsync),
         Box::new(ToplevelControlFlow),
         Box::new(HookSignature),
         Box::new(HandlerResultIgnored),

@@ -110,6 +110,14 @@ async fn test_anonymous_thread() {
     assert_runs_ok!(&src);
 }
 
+// ── R-SYNC-BREAK-3: no deadlock when Broken arrives inside `#exclusive` ──────
+
+#[tokio::test]
+async fn test_exclusive_broken_wait() {
+    let src = tss("exclusive_broken_wait");
+    assert_runs_ok!(&src);
+}
+
 // ── Inline expression tests ───────────────────────────────────────────────────
 
 #[tokio::test]

@@ -137,6 +137,59 @@ fn all_paths_return_is_ok() {
     assert!(!has_rule(&diags, "L-RETURN-NOT-ALL-PATHS"));
 }
 
+// ── L-SIGNAL-AWAIT-IN-SYNC / L-CONTRACT-AWAIT-IN-SYNC ────────────────────────
+
+#[test]
+fn signal_await_in_sync_is_rejected() {
+    let diags = run_lints(r#"
+        let s: signal = signal();
+        let r = try await s;
+    "#);
+    assert!(has_rule(&diags, "L-SIGNAL-AWAIT-IN-SYNC"));
+}
+
+#[test]
+fn contract_await_in_sync_is_rejected() {
+    let diags = run_lints(r#"
+        let c: contract = contract();
+        let r = try await c;
+    "#);
+    assert!(has_rule(&diags, "L-CONTRACT-AWAIT-IN-SYNC"));
+}
+
+// ── L-SIGNAL-WAIT-IN-ASYNC / L-CONTRACT-WAIT-IN-ASYNC ────────────────────────
+
+#[test]
+fn signal_wait_in_async_is_warned() {
+    // Locals inside function bodies are popped from the env after the type
+    // checker finishes, so the lint can only see types of identifiers that
+    // are still in the top-level scope. Bind `s` at the top level and consume
+    // it inside a thread-spawn body (which the visitor treats as async).
+    let diags = run_lints(r#"
+        let s: signal = signal();
+        ${ s.wait(); };
+    "#);
+    assert!(has_rule(&diags, "L-SIGNAL-WAIT-IN-ASYNC"));
+}
+
+#[test]
+fn contract_wait_in_async_is_warned() {
+    let diags = run_lints(r#"
+        let c: contract = contract();
+        ${ c.wait(); };
+    "#);
+    assert!(has_rule(&diags, "L-CONTRACT-WAIT-IN-ASYNC"));
+}
+
+#[test]
+fn signal_wait_in_sync_is_ok() {
+    let diags = run_lints(r#"
+        let s: signal = signal();
+        s.wait();
+    "#);
+    assert!(!has_rule(&diags, "L-SIGNAL-WAIT-IN-ASYNC"));
+}
+
 // ── L-HANDLER-RESULT-IGNORED ─────────────────────────────────────────────────
 
 #[test]
@@ -148,6 +201,24 @@ fn bare_handler_call_is_warned() {
         }
         $W() { await keepalive(); } := h;
         h.do_it();
+    "#);
+    assert!(has_rule(&diags, "L-HANDLER-RESULT-IGNORED"));
+}
+
+#[test]
+fn field_chain_handler_call_is_warned() {
+    // FieldAccess receiver — exercises the new lightweight typer.
+    let diags = run_lints(r#"
+        $template Inner() {
+            async handler tick(): void {}
+            async function __on_terminate__(): void {}
+        }
+        $template Outer() {
+            expose inner: thread<Inner>;
+            async function __on_terminate__(): void {}
+        }
+        $Outer() { await keepalive(); } := o;
+        o.inner.tick();
     "#);
     assert!(has_rule(&diags, "L-HANDLER-RESULT-IGNORED"));
 }

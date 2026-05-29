@@ -1,0 +1,57 @@
+// R-SYNC-BREAK-3 (best-effort): a Broken wakeup inside `#exclusive` must not
+// deadlock. The current implementation delivers Broken after a few cooperative
+// yields rather than indefinitely (the genuinely "delay until #exclusive
+// ends" reading is unimplementable when the wait is the sole suspension
+// source — see eval/builtin.rs::delay_broken_until_exclusive_ends).
+//
+// This test pins down the no-deadlock property: a `try await` on a signal
+// whose owner has already terminated must complete inside `#exclusive`, the
+// post-await statement must run, and the block must exit normally.
+
+$template Owner() {
+    expose sig: signal;
+    function __on_enter__(): void { self.sig = signal(); }
+    async function __on_terminate__(): void {}
+}
+
+$template Waiter(o: thread<Owner>) {
+    expose_mutable log: Queue<String>;
+    function __on_enter__(): void { self.log = Queue<String>(); }
+    async function __on_terminate__(): void {}
+
+    async function run(): void {
+        self.log.push("enter");
+        #exclusive {
+            self.log.push("before_await");
+            // owner is already terminated → sig is Broken(OwnerGone).
+            let r: Result<void, error> = try await self.o.sig;
+            assert(r.isErr());
+            let e: error = r.unwrapErr();
+            assert(e.kind == "OwnerGone");
+            self.log.push("after_await");
+        }
+        self.log.push("outside_exclusive");
+    }
+}
+
+// Bring the owner down BEFORE spawning the waiter so the signal is already
+// Broken by the time `await` looks at it.
+$Owner() { await keepalive(); } := owner;
+owner.terminate().wait();
+
+$Waiter(owner) { await run(); } := waiter;
+
+// Let the waiter complete; `asleep` already blocks in sync contexts.
+asleep(100);
+
+assert(waiter.log.size() == 4);
+let s0: String = waiter.log.tryPop().unwrap();
+let s1: String = waiter.log.tryPop().unwrap();
+let s2: String = waiter.log.tryPop().unwrap();
+let s3: String = waiter.log.tryPop().unwrap();
+assert(s0 == "enter");
+assert(s1 == "before_await");
+assert(s2 == "after_await");
+assert(s3 == "outside_exclusive");
+
+waiter.terminate().wait();
