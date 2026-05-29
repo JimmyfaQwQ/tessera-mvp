@@ -50,3 +50,22 @@
 |---|---|---|
 | R-SYNC-BREAK-3 第一句删除（Round 1）| ✅ 已修订 | `同步原语与崩溃传播规范草案.md §3.3` + §6 总览：删去"`Broken` 唤醒不早于 `#exclusive` 块结束"（不可实现 + 冗余）；Rationale 重写为"原子性由 R-EXCL-1 成立、与 R-EXCL-4 衔接"。实现侧删除 best-effort 拐杖 `delay_broken_until_exclusive_ends`。见 `spec-alignment.md §7`。 |
 | R-EXCL-4 lint（L-EXCL-AWAIT，Round 2）| ✅ 已修订 | `线程与事件循环规范.md §4.5` 在 R-EXCL-4 后补 *Lint 锚定* 段。审计发现原拟的"await self-handler"子集不可表达（`self` 是 `TemplateObject` 非 `ThreadHandle`），改为 sound 子集"`#exclusive` 内 await/`.wait()` 自有 signal/contract/permit"。实现 `passes/exclusive_self_primitive_await.rs`（L-EXCL-AWAIT, Warn）。见 `spec-alignment.md §3` R-EXCL-4。 |
+
+## 后续立项 Round 3（方向 1）：对齐补全
+
+> 本轮把 §15 剩余的"对齐"缺口逐条 sound 性裁定后落地/降级/跳过。详见 `spec-alignment.md` §12/§14/§15。
+
+| 条目 | 状态 | 处置与位置 |
+|---|---|---|
+| L-RETURN-TYPE-MISMATCH | ✅ 落地（Error）| `passes/return_type_mismatch.rs`：sound 子集 = 非-void 裸 `return;` + 标量字面量返回类型确定不符（int⇆double 保守跳过）。规范 `Linter 规则草案.md §9` 已有定义。 |
+| L-VOID-RETURN-VALUE | ✅ 落地（Error）| `passes/void_return_value.rs`：`void` 单元 `return <expr>;`。 |
+| L-EXPOSE-READONLY-CONTAINER | ✅ 落地（Info，新规则）| `passes/expose_readonly_container.rs`。规范侧新增：`Linter 规则草案.md §3` + `数据共享与并发安全规范.md §3.2` Lint 锚定。对应 `spec-alignment.md §14 偏差 1`。 |
+| L-GENERIC-NESTING-DEPTH | ✅ 落地（Info）| `passes/generic_nesting_depth.rs`：深度 > 3 触发。规范侧补「阈值约定」于 `Linter 规则草案.md §10`。 |
+| L-PANIC-OVERUSE | ✅ 落地（Info）| `passes/panic_overuse.rs`：单元内 `panic(...)` > 3。规范侧补「阈值约定」于 `Linter 规则草案.md §7`。 |
+| L-TEMPLATE-APPLY-CONTEXT | ⏭️ 跳过 | parser 无 `$` 表达式 primary，spawn 只能作语句（§4.7 许可所有语句位置）；嵌入表达式即 parse 错误 —— 无可 lint 的 AST 目标，parser 层已强制。规范侧补实现注记于 `Linter 规则草案.md §5`（经 §3 注）。 |
+| L-DEFINE-IN-NON-TEMPLATE | ⏭️ 跳过 | `KwDefine` 仅在模板成员解析位置消费；他处为 parse 错误 —— parser 层已强制。规范侧补实现注记于 `Linter 规则草案.md §3`。 |
+| L-ASYNC-NO-AWAIT | ⏭️ 跳过 | 合法的「无 await async 函数」（`await run()` 需 `run` 为 async，即便其体无 await）与冗余 async 不可静态区分；即便降 Info 也会误伤 `helloworld reader.run` 并破坏 `--check` 干净。需全程调用图分析才 sound。 |
+| L-NAMING-THREAD-HANDLE | ⏭️ 跳过 | 约定句柄名以 `Thread` 结尾，但项目自身惯用短名（`r`/`d`/`w1`/`logger`…），触发会破坏 `--check` 干净并误伤惯用写法。 |
+| L-ASSERT-SIDE-EFFECT | ⏭️ 跳过 | Tessera 赋值是语句非表达式（`count++`/`x=5` 不可表达于 assert 条件），仅余调用，纯/非纯不可判定，会误伤 `assert(list.isEmpty())` 类合法写法。 |
+| 同块重复声明拒绝 | ✅ 落地 | `checker/stmts.rs::check_dup_lets`（let-vs-let，接入 `check_block`/scope 块/Pass 4）。规范 `语句与控制流规范草案.md §2.1.2` 已有定义，无需改规范。测试 `tessera-types/tests/typecheck.rs`。 |
+| 测试缺口（keepalive / expose_mutable 替换 / 短路 / example 3·8·9）| ✅ 补齐 | 见 `spec-alignment.md §3/§4/§8/§13`；`tests/tss/*.tss` + `integration.rs`。 |

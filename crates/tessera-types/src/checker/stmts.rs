@@ -11,7 +11,7 @@ use super::TypeChecker;
 
 impl<'e> TypeChecker<'e> {
     /// Reject re-declaring the same name with `let` twice in the *same* block
-    /// (《语句与控制流规范草案 §3.3》: shadowing in a nested block is allowed,
+    /// (《语句与控制流规范草案 §2.1.2》: shadowing in a nested block is allowed,
     /// re-declaration in the same block is not). This is a let-vs-let check over
     /// a block's direct statements, so injected bindings (params, `self`, spawn
     /// handles) are never falsely flagged.
