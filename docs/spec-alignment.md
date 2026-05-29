@@ -1,224 +1,12 @@
 # Tessera Spec Alignment 报告
 
-> 基准：`E:/Tessera-Spec/` 当前内容 vs `E:/tessera-mvp/` commit `bbda9b1`（2026-05-29，初始审计）；本次修复在该 commit 之上叠加。
+> **当前基准**：tessera-mvp `7f993dd` / Tessera-Spec `7ded246`（2026-05-29）。`E:/tessera-mvp/` 实现 vs `E:/Tessera-Spec/` 规范的逐条对照。
+> 覆盖：tessera-lexer / tessera-parser / tessera-ast / tessera-types / tessera-runtime / tessera-interp / tessera-lint。
+> 测试：tessera-interp 37 integration + tessera-lint 28 smoke + parser/lexer 各 5（合计 75）；Lint pass 21。`cargo build --workspace --all-targets` 无 warning；`--check helloworld.tss` / `demo.tss` 均无诊断。
 >
-> 覆盖：tessera-lexer / tessera-parser / tessera-ast / tessera-types / tessera-runtime / tessera-interp / tessera-lint
+> **状态徽标**：✅ 已实现且有测试 ／ ⚠️ 已实现但缺测试或行为未完全覆盖 ／ ❌ 未实现 ／ 🔶 实现与规范存在语义偏差。
 >
-> **状态徽标**
-> - ✅ 已实现且有测试覆盖
-> - ⚠️ 已实现但缺测试 / 行为未完全覆盖
-> - ❌ 完全未实现
-> - 🔶 实现与规范存在语义偏差，需修复或修订规范
-
-## 后续立项 Round 2（方向 1 承接）：L-EXCL-AWAIT —— R-EXCL-4 的 sound 子集（commit `ae00ba2` / `b5d93ff` 之后）
-
-> 起点：Round 1 收尾时挂账的 Round 2 候选——实现 R-EXCL-4（《线程与事件循环规范 §4.5》告知性约束）的可静态命中子集。
-
-**审计结论**：R-EXCL-4 的完整死锁判定不可静态判定（"await 是否依赖本线程调度"通常跨函数）。原拟的"await 自身 handler"子集**不可表达**——`self` 在类型系统里是 `Type::TemplateObject`（非 `ThreadHandle`），线程拿不到指向自身的句柄；而 `await 其他线程的 handler/原语` 在 `#exclusive` 内是**合法**的（由那个线程驱动，R-EXCL-4 明确祝福），不应报警。真正 sound 且可命中的子集是**同步原语**：原语的设计是"owner 驱动（raise/fulfill/release）、他人 await"，故 owner 在 `#exclusive` 内 `await`/`.wait()` 自己拥有的原语必然死锁（owner 被自己卡住，无法再驱动）。
-
-**裁决 B（sound Warn）：**
-
-| 工作项 | 状态 | 关键改动 |
-|---|---|---|
-| 新增 lint pass `L-EXCL-AWAIT`（Warn） | ✅ | `passes/exclusive_self_primitive_await.rs`：跟踪当前模板自有 signal/contract/permit 字段（expose/expose_mutable/define）+ `#exclusive` 深度；命中 `#exclusive` 内 `await self.<prim>` 或 `self.<prim>.wait()`。spawn body 用空上下文（不同 `self`，不同线程）→ sound 地不误报。注册于 `passes/mod.rs::all()`（20 → 21）。 |
-| 规范锚定 R-EXCL-4 | ✅ | `线程与事件循环规范.md §4.5` 在 R-EXCL-4 后补 *Lint 锚定* 段，说明 sound 子集与权威源文件。 |
-| 测试守护 | ✅ | `lint_smoke.rs` 新增 4 例：await/`.wait()` 自有原语 + `#exclusive` → 命中；自有原语在 `#exclusive` 外 → 不命中；`await self.o.sig`（他线程原语）在 `#exclusive` 内 → 不命中。 |
-
-**已知范围限制**（sound，非 bug）：仅覆盖**线程模板成员**（handler / member func / hook）内的 `self.<prim>`；线程主体在 spawn 处（`$T(){...}` 的 body）的 `self` 绑定在 spawn 站点，未覆盖（罕见，可后续扩展）。别名（`let s = self.sig; #exclusive { await s }`）不追踪。
-
-**测试规模**：tessera-lint smoke 24 → **28**；其余不变（interp 37、parser 5、lexer 5）。Lint pass 20 → **21**。`cargo build --workspace --all-targets` 无 warning；`--check helloworld.tss`（含 `#exclusive` 但仅对自有 permit 调 `release()`，非 await/wait）/ `demo.tss` 均无诊断。
-
----
-
-## 后续立项 Round 1（方向 1）：R-SYNC-BREAK-3 净简化（commit `0290978` 之后）
-
-> 起点：spec-alignment 四轮收尾后剩余的深度设计性方向之一（方向 1）。
-
-**审计结论**：R-SYNC-BREAK-3 第一句"`Broken` 唤醒不早于 `#exclusive` 块结束"在协作单线程下既**不可实现**（当 wait 是块内唯一挂起源时死锁），又**冗余**——`#exclusive` 原子性已由 R-EXCL-1 保证（块内不调度任何外部任务），而 Broken 唤醒只是让块内 `await`/`.wait()` 以失败恢复，这是该独占协程**自身的续体**，并非被插入的外部任务，因此不破坏原子性。规范 §4.1/4.2/4.5 明确**允许** `#exclusive` 内 await（它是"跨 await 点的原子调度区"，非同步区），故该子句应删除而非加禁止性 lint。
-
-**裁决 P1（保留现设计 + 净简化）：**
-
-| 工作项 | 状态 | 关键改动 |
-|---|---|---|
-| 删除 best-effort 拐杖 | ✅ | `eval/builtin.rs::delay_broken_until_exclusive_ends`（30 行）删除；6 个调用点（`eval.rs` await 3 处 + `builtin.rs` `.wait()` 3 处）改为即时交付 Broken |
-| 规范删冗余子句 | ✅ | `同步原语与崩溃传播规范草案.md §3.3` 删去"延迟到块结束"；R-SYNC-BREAK-3 重写 Rationale（原子性由 R-EXCL-1 成立、与 R-EXCL-4 衔接）；§6 总览同步 |
-| 测试守护 | ✅ | `exclusive_broken_wait.tss` 注释更新为 P1 语义；新增 `exclusive_broken_success_not_reverted.tss` 锚定 clause 2（raised+broken 的 signal `wait()` 仍返回 Ok，不被回溯）+ integration 新 case |
-
-**Round 2 候选（同主题承接）**：`L-EXCL-AWAIT` —— 实现 R-EXCL-4（《线程与事件循环规范 §4.5》告知性约束）的可静态命中子集（`#exclusive` 内 `await` 一个 self-handler 调用 → 必然死锁，Warn 级）。规范侧把 R-EXCL-4 补一条可锚定 lint 引用。
-
-**测试规模**：tessera-interp integration 36 → **37**；其余不变（lint smoke 24、parser 5、lexer 5）。`cargo build --workspace --all-targets` 无 warning；`--check helloworld.tss` / `demo.tss` 均无诊断。
-
----
-
-## 第四轮（收尾轮）修复总结（commit `9542616` 之后）
-
-| 工作项 | 状态 | 关键改动 |
-|---|---|---|
-| 设置回滚 | ✅ | `.claude/settings.local.json` 移除 `spinnerTipsEnabled` 与 `statusLine`（迁至全局），独立 commit |
-| Lint typer 加 method-call 返回类型推断 | ✅ | `scoped_visitor.rs::infer` 新增 MethodCall 分支 + `method_return_type` 函数；支持 `pool.tryPop().unwrap().handler()` 三段链路；修复 L-HANDLER-AWAIT-TYPE 在 `.wait()` on HandlerFuture 上的 false-positive（运行时 `.waitHandler()` 不存在） |
-| `${...}` 匿名 spawn body typer 验证 | ✅ | 已有 ThreadSpawn 分支正确设置 in_async 与 scope；新增 smoke 测试 `signal_wait_inside_shorthand_body_is_warned` |
-| spec-issues E 系列 6 条 | ✅ | Tessera-Spec README 新增 "规范维护约定" 一节：E-1 编号格式、E-2 Severity 边界、E-3 Rule/Rationale 版式、E-4 example-code 同源、E-5 顶部总览、E-6 跨文档锚点 |
-| example-code.md ← helloworld.tss | ✅ | example-code 替换为引言 + 特性映射表 + helloworld.tss 逐字代码 + 运行说明；E-4 同源约定落地 |
-
-### 第四轮测试规模
-
-| 套件 | 第三轮后 | 第四轮后 |
-|---|---:|---:|
-| tessera-interp integration | 36 | 36 |
-| tessera-lint smoke | 22 | **24** |
-| tessera-parser 单测 | 5 | 5 |
-| tessera-lexer 单测 | 5 | 5 |
-| **合计** | **68** | **70** |
-
-Lint pass 数 20（不变；L-HANDLER-AWAIT-TYPE 缩减为只检查反方向 false-positive 消失）。`cargo build --workspace --all-targets` 无 warning；`--check helloworld.tss` 与 `--check demo.tss` 均无诊断。
-
-### 全程总览（4 轮）
-
-| 轮次 | tessera-mvp commit | Tessera-Spec commit | 主要目的 |
-|---|---|---|---|
-| 1 | `2f7e075` | `da847c2` | 审计 + P0/P1 + A-1~A-5 + 7 个 lint pass |
-| 2 | `c559188` | `86d1a4d` | signal/contract 上下文 lint + 表达式 typer + R-SYNC-BREAK-3 + 内建函数 + B-1/2/7/9/12 |
-| 3 | `9542616`（含 chore `49c8424`） | `c695f00` | typer 深化 + 标准库 13 方法 + B 剩余 + C/D 系列 |
-| 4 | (本轮 chore `72c2ca6` + 主) | (本轮规范) | 收尾：typer method-call + ${} 验证 + E 系列 + example-code 同源 |
-
-测试规模 29 → 48 → 55 → 68 → **70**；Lint pass 9 → 16 → 20 → 20。
-
-### 收尾状态
-
-`docs/spec-issues.md` 与 `docs/spec-alignment.md` 中所有以"留作下一轮"标注的内容均已处理。剩余的为**深度设计性变更**，需独立立项：
-
-- R-SYNC-BREAK-3 字面延迟（协作单线程下不可严格实现，已在 R-SYNC-BREAK-3 Rationale 中正式承认）
-- 用户函数泛型（语言增量）
-- 标准库进一步扩展（HashSet、Channel、map/filter/reduce）
-- 跨文档锚点自动校验（CI 工具问题，非规范本身）
-
----
-
-## 第三轮修复总结（commit `c559188` 之后）
-
-| 工作项 | 状态 | 关键改动 |
-|---|---|---|
-| Lint typer 深化（看到 local let） | ✅ | 新建 `scoped_visitor.rs::ScopedTyper`；改造 5 个 pass（handler_await_type / handler_result_ignored / permit_wait_in_async / signal_wait_in_async / contract_wait_in_async）；新增 5 条 smoke 测试；helpers.rs 的 resolve_type_expr 扩展到 thread<X> / List / Map / Option / Result / Future / HandlerFuture；helloworld.tss 一处真实命中（`w.echo(text)` → `let _ = w.echo(text)`） |
-| spec-issues B 剩余 6 条 + B-8 修正 | ✅ | B-3 String 隐式转换格式表、B-4 try 包裹同步表达式、B-5 hook 细则、B-6 字段初始化顺序、B-10 Future vs HandlerFuture、B-11 generic 推断边界；B-8 状态修正 |
-| spec-issues C 4 条 + D 6 条 | ✅ | C-1/C-2/C-4 加引用注与 *Motivation* 示范；C-3 已结构性解决；D-1 匿名 scope 模板、D-2 `:=` 优先级、D-3 原语大小写、D-4 expose_mutable 引用、D-5 spawn 句法位置、D-6 try 优先级 |
-| 标准库扩展（13 方法） | ✅ | String: startsWith / endsWith / contains / indexOf / trim / split；List: contains / indexOf / clear；Map: contains；char: isDigit / isAlpha / isWhitespace；checker/exprs.rs 加签名；builtin.rs 加实现；标准容器规范新增 §13 扩展方法表；8 个内联测试 |
-
-### 第三轮测试规模
-
-| 套件 | 第二轮后 | 第三轮后 |
-|---|---:|---:|
-| tessera-interp integration | 28 | **36** |
-| tessera-lint smoke | 17 | **22** |
-| tessera-parser 单测 | 5 | 5 |
-| tessera-lexer 单测 | 5 | 5 |
-| **合计** | **55** | **68** |
-
-Lint pass 数 20（不变；不引入新规则，5 个 pass 改造为 ScopedTyper 驱动）。`cargo build --workspace --all-targets` 无 warning；`--check helloworld.tss` 与 `--check demo.tss` 均无诊断。
-
-### 第三轮已知保留缺口
-
-- spec-issues E 系列（编号格式、Severity 边界、Rule/Rationale 版式、example-code 联动、跨文档锚点）— 多为机械整理性工作，需要单独成轮。
-- 标准库进一步扩展：HashSet / Channel / map / filter / reduce 等"语言增量"非"对齐补全"。
-- R-SYNC-BREAK-3 字面延迟在协作单线程下无法严格实现（第二轮 Rationale 已说明）。
-
----
-
-## 第二轮修复总结（commit `2f7e075` 之后）
-
-| 工作项 | 状态 | 关键改动 |
-|---|---|---|
-| signal / contract 同步/异步 lint | ✅ | 新增 4 个 pass：`signal_await_in_sync.rs` / `signal_wait_in_async.rs` / `contract_await_in_sync.rs` / `contract_wait_in_async.rs`；smoke 测试 5 例 |
-| Lint 轻量表达式 typer | ✅ | `passes/helpers.rs::infer_expr_type` 覆盖 Ident / FieldAccess / TypeCtor；`handler_await_type.rs` 与 `handler_result_ignored.rs` 切换到新 typer；新增 field-chain handler-call smoke 测试 |
-| 内建函数规范章节 | ✅ | `标准容器与常用类型规范草案.md §12` 权威列出 print/println/asleep/keepalive/getchar/signal/contract/permit/locked 签名 |
-| spec-issues B 类（B-1 / B-2 / B-7 / B-9 / B-12） | ✅ | 5 处规范文本修订：int 溢出 wrap-around、char 转义表、`#exclusive` reentrant 嵌套、`Err("kind")` 语法糖、顶层 sync 上下文 |
-| R-SYNC-BREAK-3 runtime + 测试 | ✅ | `eval/builtin.rs::delay_broken_until_exclusive_ends` best-effort 实现；`tests/tss/exclusive_broken_wait.tss` 验证 no-deadlock；同步原语规范 R-SYNC-BREAK-3 加 Rationale |
-
-### 第二轮测试规模
-
-| 套件 | 第一轮后 | 第二轮后 |
-|---|---:|---:|
-| tessera-interp integration | 27 | 28 |
-| tessera-lint smoke | 11 | 17 |
-| tessera-parser 单测 | 5 | 5 |
-| tessera-lexer 单测 | 5 | 5 |
-| **合计** | **48** | **55** |
-
-Lint pass 数 16 → 20。`cargo build --workspace --all-targets` 无 warning；`--check helloworld.tss` 与 `demo.tss` 均无诊断。
-
-### 已知保留缺口（继续记入 P2）
-
-- L-HANDLER-AWAIT-TYPE / L-HANDLER-RESULT-IGNORED 仍依赖 typer 能查到 receiver 类型；**局部变量**（函数 / handler body 内的 let）在 type-check 完成后从 env 弹出，因此对纯 local handle 的 fire-and-forget 仍是盲区。需要的话可在 typer 中加一个"扫 enclosing scope 内 let 的 init"的 fallback。
-- R-SYNC-BREAK-3 的字面"延迟"在协作单线程下无法严格实现，已通过 Rationale 在规范侧澄清。
-- spec-issues B-3 / B-4 / B-5 / B-6 / B-8 / B-10 / B-11 留作下一轮。
-
----
-
-## 本次修复总结（自初始审计以来）
-
-下列条目已在本轮修复中处理并附测试：
-
-### P0 全部完成
-
-- **P0-1**：`HandlerDispatchError` kind 由 `"TargetGone"` 改为 `"TargetTerminated"`（`runtime/src/error.rs:201`）。规范侧《基础类型...》§6 表 393 行同步修正。测试 `test_target_terminated_kind`。
-- **P0-2**：`__ping__` 虚拟 handler 注入（`types/src/checker/registration.rs` 自动注册 + `runtime/src/thread_state.rs::dispatch_handler` 入口特判）；不进 mpsc 队列、不受 R-HANDLER-2 / `#exclusive` 约束。测试 `tests/tss/ping_handler.tss`。
-- **P0-3**：R-HANDLER-2 handler-in-flight gate（`ThreadState.handler_in_flight: watch<bool>` + `event_loop.rs` 主 select 增 gate 与 wakeup 分支 + `dispatch_handler_inline` 设置/释放门控）。测试 `tests/tss/handler_mutex.tss` 用时间戳序列断言无交错。
-- **P0-4**：int 字面量越界 → parser 阶段报错（`parser/src/parser.rs::parse_primary` LitInt）。测试 `test_int_literal_overflow`。
-- **P0-5**：define 字段对外不可见 — 经测试核实实现已天然隔离（FieldAccess 只查 `expose_fields` / `expose_mutable_fields`），无需改 runtime。测试 `test_define_field_external_invisible`。
-
-### P1 主要完成（P1-6 延后）
-
-- **P1-1 L-TOPLEVEL-CONTROL-FLOW**：顶层 `await`/`return` 禁止；顶层 `break`/`continue` 仅在 `for`/`while` 内合法（`passes/toplevel_control_flow.rs`）。
-- **P1-2 L-FUNCTION-HOOK-SIGNATURE**：`__on_enter__` / `__on_exit__` 必须 sync void、`__on_terminate__` 必须 async void（`passes/hook_signature.rs`）；同时识别 parser 误归类为 MemberFunc 的情况。
-- **P1-3 L-HANDLER-RESULT-IGNORED**：裸 handler 调用语句报警（`passes/handler_result_ignored.rs`）。`L-HANDLER-AWAIT-TYPE` 暂保留仅识别 Ident receiver 的现状（field 链需要表达式 typer，记为后续工作）。
-- **P1-4**：char 支持 `\u{HHHH}` 转义（`lexer/src/token.rs::unescape` 与 char 正则）；String[i] 实际已实现，补类型检查 `Type::TString → Type::Char`；测试 `test_string_indexing_and_unicode`、`test_string_index_out_of_bounds`。
-- **P1-5**：匿名 `${ ... }` 端到端测试 `tests/tss/anonymous_thread.tss` 用 `__ping__` 探活。
-- **P1-6（延后）**：R-SYNC-BREAK-3 反例测试需要 runtime 在 `#exclusive` 期间延后 `signal/contract/permit` 的 Broken 唤醒；当前 `runtime/src/signal.rs` 未实现该延迟，写测试只会暴露已知缺口。改记入 P2 后续 TODO。
-
-### 规范侧修订（A-1 / A-2 / A-3 / A-4 / A-5）全部完成
-
-- **A-1**（HandlerDispatchError kind 命名）：《基础类型...》§6 表 `"TargetGone"` 改为 `"TargetTerminated"`。
-- **A-2**（R-HANDLER-2 / R-HANDLER-3 张力）：保留 R-HANDLER-2 严格 handler↔handler 互斥，加 Rationale；R-HANDLER-3 显式声明 body↔handler 在挂起点交替合法；两条独立。实现侧用 P0-3 gate 满足。
-- **A-3**（粘性 Terminating）：R-EXCL-3 末尾加"一旦 Terminating，即使后续主体自然结束仍按 terminate 路径执行 teardown"。
-- **A-4**（同步原语链式绑定）：新增 R-SYNC-OWN-4 — 首次 expose 确立绑定主，二次 expose 不变更。
-- **A-5**（R-HANDLER-PING 语义）：重写为"调度即应答；不进队列；不受 R-HANDLER-2 / `#exclusive` 约束；用户重写触发 L-HANDLER-PING-REDEFINED"。
-
-### Linter 补漏（共 7 新增 + 1 现有保留改进）
-
-新增 lint passes（注册于 `passes/mod.rs::all()`）：
-
-| 规则 ID | 文件 |
-|---|---|
-| L-TOPLEVEL-CONTROL-FLOW | `passes/toplevel_control_flow.rs` |
-| L-FUNCTION-HOOK-SIGNATURE | `passes/hook_signature.rs` |
-| L-HANDLER-RESULT-IGNORED | `passes/handler_result_ignored.rs` |
-| L-HANDLER-PING-REDEFINED | `passes/handler_ping_redefined.rs` |
-| L-EXPOSE-READONLY-WRITE | `passes/expose_readonly_write.rs` |
-| L-DEFINE-EXTERNAL-ACCESS | `passes/define_external_access.rs` |
-| L-RETURN-NOT-ALL-PATHS | `passes/return_not_all_paths.rs` |
-
-Lint pass 已 9 → 16（已实现 / 规范定义 ≈ 50+；覆盖率 ~18% → ~32%）。`L-AT-TEMPLATE-STACKING` 因 parser 语法已防御，跳过。`crates/tessera-lint/tests/lint_smoke.rs` 新增 11 个 smoke 测试覆盖每个新 pass。
-
-### 测试规模
-
-| 套件 | 修复前 | 修复后 |
-|---|---:|---:|
-| tessera-interp integration | 19 | 27 |
-| tessera-lint smoke | 0 | 11 |
-| tessera-parser 单测 | 5 | 5 |
-| tessera-lexer 单测 | 5 | 5 |
-| **合计** | **29** | **48** |
-
-cargo build --workspace 与 cargo test --workspace 全部通过；`tessera-cli --check helloworld.tss` 与 `--check demo.tss` 均无诊断。
-
-### 未来工作（已记入 spec-issues.md）
-
-- R-SYNC-BREAK-3 runtime 实现 + 测试；
-- L-HANDLER-AWAIT-TYPE 扩展到 field/method-chain receiver（需表达式 typer）；
-- 同步原语 `signal`/`contract` 的 sync/async 上下文 lint（与现有 permit pass 镜像）；
-- `keepalive` / `getchar` / 内建函数规范化为标准文档章节。
-
----
-
+> 本文档只反映**当前最终状态**。逐轮修复脉络（4 轮 spec-alignment + 方向 1 的 Round 1「R-SYNC-BREAK-3 净简化」/ Round 2「L-EXCL-AWAIT」）保存在 git 历史中。
 
 ## 目录
 
@@ -237,37 +25,22 @@ cargo build --workspace 与 cargo test --workspace 全部通过；`tessera-cli -
 12. [Linter 规则对照](#12-linter-规则对照)
 13. [example-code.md 覆盖映射](#13-example-codemd-覆盖映射)
 14. [已识别偏差](#14-已识别偏差)
-15. [差距修复 TODO（P0 / P1 / P2）](#15-差距修复-todo)
+15. [仍开放的 TODO](#15-仍开放的-todo)
 16. [验证与维护](#16-验证与维护)
 
 ## 0. 摘要表
 
-### 规范文档对齐度
-
-| # | 规范文档 | 已对齐 ✅ | 部分 ⚠️ | 缺失 ❌ | 偏差 🔶 |
-|---|---|---:|---:|---:|---:|
-| 1 | Tessera 核心语义 | 7 | 2 | 0 | 0 |
-| 2 | 模板与线程规范 | 5 | 1 | 1 | 0 |
-| 3 | 线程与事件循环规范 | 9 | 2 | 2 | 1 |
-| 4 | 数据共享与并发安全规范 | 6 | 2 | 1 | 1 |
-| 5 | async / await 规范 | 5 | 1 | 1 | 0 |
-| 6 | 错误与异常语义 | 6 | 2 | 1 | 1 |
-| 7 | 同步原语与崩溃传播规范 | 8 | 0 | 0 | 0 |
-| 8 | 基础类型、表达式与函数规范 | 12 | 3 | 4 | 1 |
-| 9 | 标准容器与常用类型规范 | 8 | 2 | 4 | 0 |
-| 10 | 语句与控制流规范 | 11 | 1 | 1 | 0 |
-| 11 | 泛型与类型构造器规范 | 3 | 1 | 2 | 0 |
-| 12 | Linter 规则草案 | 9 | 0 | 36 | 0 |
-| 13 | example-code.md | 8 | 2 | 0 | 0 |
-| **合计** | | **97** | **19** | **53** | **4** |
+> 下表反映**当前状态**。逐条状态见 §1–§13；仍开放的缺口集中在 §14（偏差）与 §15（TODO）。
 
 ### 三大维度总体对齐
 
-| 维度 | 估算对齐率 | 主要短板 |
+| 维度 | 当前状态 | 仍开放的主要短板 |
 |---|---|---|
-| 解释器（lexer + parser + ast + runtime + interp） | ~85% | `__ping__` 隐式 handler、char Unicode 转义、字符串方法 `[i]` 未实现 |
-| 类型系统（tessera-types） | ~70% | 无用户函数泛型；TemplateObject 的方法解析覆盖未审计；`define` 字段越界访问未阻止 |
-| Linter（tessera-lint） | ~18%（9/50+） | 36 条规则未实现；已实现规则的覆盖也有盲区（如 L-HANDLER-AWAIT-TYPE 仅识别 Ident 接收者）|
+| 解释器（lexer + parser + ast + runtime + interp） | 高度对齐 | `keepalive()` 永不返回语义缺独立验证测试；List/Map 跨线程使用缺领域级诊断（§14） |
+| 类型系统（tessera-types） | 大体对齐 | **用户函数泛型未实现**（`function f<T>(...)`，§11）；`expose_mutable` 字段替换的触发路径未验证（§4） |
+| Linter（tessera-lint） | 21 个 pass | 规范草案约半数 L 规则未实现（L-TEMPLATE-APPLY-CONTEXT / L-AWAIT-EXPR-IN-TOPLEVEL / L-RETURN-TYPE-MISMATCH / L-VOID-RETURN-VALUE / L-ASYNC-NO-AWAIT / option·result unwrap / style 等，见 §12 未实现表）|
+
+> 说明：spec-alignment 四轮 + 方向 1 Round 1/2 已落地全部 P0、绝大多数 P1，以及标准库 13 方法、4 类同步原语上下文 lint、`#exclusive`/同步原语相关规则等。§1–§13 各表已逐行更新到当前状态。
 
 
 ## 1. Tessera 核心语义
@@ -279,7 +52,7 @@ cargo build --workspace 与 cargo test --workspace 全部通过；`tessera-cli -
 | R-CORE-TERM-1 | `Terminated` 后不再执行 handler、不再修改 expose | ✅ | `crates/tessera-runtime/src/thread_state.rs:170-188` | `dispatch_handler` 立刻返回 `TargetTerminated` |
 | R-CORE-HANDLER-1 | `Terminated`/`Crashed` 后 handler future 不得永久挂起 | ✅ | `event_loop.rs:252,259,289` + `drain_handlers` | 队列在状态切换时统一 drain |
 | R-CORE-SCHED-1 | 单一执行点；同步段直至挂起点不可被抢占 | ✅ | `event_loop.rs:186-306`（tokio `select!` 配合 `biased`）| 单线程 `LocalSet` 协作调度 |
-| R-CORE-SCHED-2 | 同一线程的 handler 请求 FIFO；不并发执行 | ⚠️ | `event_loop.rs:300-304`（mpsc 通道 + 单点 select）+ `dispatch_handler_inline:340` | FIFO ✅；但 `dispatch_handler_inline` 使用 `spawn_local` 使 handler 与主体并发，违反"线程内不并发"的字面意思 — 详见 §14 偏差 1 |
+| R-CORE-SCHED-2 | 同一线程的 handler 请求 FIFO；不并发执行 | ✅ | `event_loop.rs:300-304`（mpsc + 单点 select）+ handler-in-flight gate（`ThreadState.handler_in_flight: watch<bool>`）| FIFO + handler 互斥由 gate 保证（P0-3）；规范 A-2 已澄清"主体↔handler 在挂起点交替"合法 |
 | R-CORE-EXCL-1 | `#exclusive` 块独占执行；不交错 handler/timer/IO | ✅ | `event_loop.rs:300, 345-350` | 主路径 + handler 任务双重等待 |
 | R-CORE-SHARE-1 | 子线程不可直接读写父线程局部变量 | ✅ | `event_loop.rs:37-120`（`current_thread_state` 与 env 切换；线程 body 使用新建 env）| 没有跨线程 env 共享；测试 `thread_lifecycle.tss` 隐含验证 |
 | R-CORE-SHARE-2 | 不存在"只读直接引用"父局部变量的形式 | ✅ | parser 无此语法；runtime 无对应 Value 变体 | 反例不可表达 |
@@ -290,7 +63,7 @@ cargo build --workspace 与 cargo test --workspace 全部通过；`tessera-cli -
 | 条目 | 描述 | 状态 | 实现位置 | 备注 |
 |---|---|---|---|---|
 | 模板基本语法 `@template` / `$template` | lexer + parser + AST | ✅ | `lexer/src/token.rs:9-21`、`parser/src/parser.rs:205-360`、`ast/src/lib.rs`（ScopeTemplateDecl / ThreadTemplateDecl）| 命名 + 匿名两种形式都已支持 |
-| 匿名简写 `${ ... }` | 创建不可终止匿名线程 | ⚠️ | `parser.rs:572-592`、`event_loop.rs`（无 decl 路径）| 词法+句法✅；无独立 .tss 测试 |
+| 匿名简写 `${ ... }` | 创建不可终止匿名线程 | ✅ | `parser.rs:572-592`、`event_loop.rs`（无 decl 路径）| 端到端测试 `tests/tss/anonymous_thread.tss`（用 `__ping__` 探活）|
 | Terminatable 判定（声明 `async function __on_terminate__()`）| 自动识别 | ✅ | `parser.rs:300`、`types/src/checker/registration.rs`、`runtime/src/thread_state.rs:42,93` | `is_terminatable` 字段贯穿 |
 | R-TEMPLATE-STACKING：同一块不可叠加多个 `@template` | 语法层禁止 | ✅ | `parser.rs:457-465`：scope_block 一次只能有一个 `@template`/`@Name`；语法不允许重复 | 无显式 lint，但语法不可表达 |
 | 线程模板成员：`expose` / `expose_mutable` / `define` / `async handler` / 三个生命周期 hooks / 普通 method | 全部支持 | ✅ | `parser.rs:270-360`、`ast/src/lib.rs`（ThreadTemplateMember） | 句法/AST 完整 |
@@ -310,11 +83,11 @@ cargo build --workspace 与 cargo test --workspace 全部通过；`tessera-cli -
 | R-LIFE-1 | 主体自然结束 → 自动 Terminated，不调用 `__on_terminate__` | ✅ | `event_loop.rs:226-265`：只调用 `__on_exit__` | 内联测试覆盖 |
 | R-LIFE-2 | 显式 `terminate()` 才会触发 `__on_terminate__` 然后 `__on_exit__` | ✅ | `event_loop.rs:199-223`（先 `run_teardown_hooks(.., true)`）；helper 在 `run_teardown_hooks:384-402` 顺序执行 `__on_terminate__` → `__on_exit__` | `thread_lifecycle.tss` 覆盖 |
 | R-HANDLER-1 | handler FIFO（按线程实例）| ✅ | `mpsc::Receiver` 顺序消费 | |
-| R-HANDLER-2 | 同线程不并发执行两个 handler | 🔶 | `event_loop.rs:340-355`：实际通过 `spawn_local` 把 handler 与主体并发到同一 LocalSet | 单 OS 线程 + 协作，但语义上"并发执行"已经发生（解释器代码注释也承认是为了打破 deadlock） — 详见 §14 偏差 1 |
+| R-HANDLER-2 | 同线程不并发执行两个 handler | ✅ | handler-in-flight gate（`ThreadState.handler_in_flight: watch<bool>` + 主 select gate + `dispatch_handler_inline` 设/释放）| P0-3；测试 `tests/tss/handler_mutex.tss` 用时间戳序列断言无交错。规范 A-2：handler↔handler 严格互斥，body↔handler 挂起点交替合法 |
 | R-HANDLER-3 | 主体 ↔ handler 仅在挂起点切换 | ✅ | 协作调度自然满足 | |
 | R-HANDLER-4 | Terminating/Terminated/Crashed 拒绝新 handler；队列项以调度失败结束 | ✅ | `thread_state.rs:170-188` + `event_loop.rs::drain_handlers` | 三种状态映射到三个 dispatch error |
 | R-HANDLER-5 | 主体结束后不再执行 handler | ✅ | `event_loop.rs:252,259,289` 主体完成路径 drain 队列 | |
-| R-HANDLER-PING | 所有线程模板隐式具有 `async handler __ping__(): String` 返回 "pong" | ❌ | `eval.rs::find_handler` 未注入；`registration.rs` 未注册 | 例 `exclusive_block.tss` 中 `ping` 是用户自定义 handler，与 `__ping__` 不同 |
+| R-HANDLER-PING | 所有线程模板隐式具有 `async handler __ping__(): String` 返回 "pong" | ✅ | `registration.rs` 自动注册 + `thread_state.rs::dispatch_handler` 入口特判；不进队列、不受 R-HANDLER-2 / `#exclusive` 约束 | P0-2；测试 `tests/tss/ping_handler.tss`；用户重写触发 L-HANDLER-PING-REDEFINED |
 | R-HANDLER-SCOPE | handler 只能访问模板对象，不可访问外部作用域 | ⚠️ | `event_loop.rs:39,120` + 创建 handler body 时使用模板 env | 实现倾向正确，但无 lint/反例测试 |
 | R-EXCL-1 | `#exclusive` 内独占线程；handler/timer/IO 不交错 | ✅ | `event_loop.rs:300 + 345-350`（select gate + handler 任务 watch 等待）| `exclusive_block.tss` 覆盖 |
 | R-EXCL-2 | `#exclusive` 阻塞 handler 进入，但不阻塞入队 | ✅ | mpsc 通道一直接收；只在主 select 上 gate | |
@@ -332,10 +105,10 @@ cargo build --workspace 与 cargo test --workspace 全部通过；`tessera-cli -
 | R-CORE-SHARE-3 | 通过参数传递初值；避免跨线程存储共享 | ✅ | `event_loop.rs:99-117`（参数复制进入 template_self）| |
 | R-CORE-SHARE-4 | 跨线程访问线程状态 → 通过 expose / handler | ✅ | `thread_state.rs:47-50,164-189` | |
 | R-CORE-SHARE-5 | 多线程共享数据 → 并发安全类型（`locked<T>`/`Queue<T>`）| ✅ | `runtime/src/locked.rs`、`runtime/src/queue.rs` | |
-| R-EXPOSE-1 | 只读共享 = `expose`；写入只能通过 handler 或并发安全类型 | ⚠️ | `parser.rs:272`、`event_loop.rs:67-69` 区分两种 expose；runtime 强制只读未严格审计 | 缺 Linter L-EXPOSE-READONLY-WRITE |
+| R-EXPOSE-1 | 只读共享 = `expose`；写入只能通过 handler 或并发安全类型 | ✅ | `parser.rs:272`、`event_loop.rs:67-69` 区分两种 expose；`tessera-lint/src/passes/expose_readonly_write.rs`（L-EXPOSE-READONLY-WRITE）| |
 | R-EXPOSE-2 | `expose_mutable` 字段类型必须并发安全 | ✅ | `tessera-lint/src/passes/expose_mutable_unsafe.rs:8-31` + `types/src/ty.rs:47-49` | L-EXPOSE-MUTABLE-UNSAFE pass 实现 |
 | R-EXPOSE-3 | `expose_mutable` 字段引用不可被外部替换，只可通过其方法改内容 | ⚠️ | `runtime/src/error.rs:108-116` 定义 `ExposeMutableFieldReplace`；但触发路径需复核（eval.rs 是否在外部赋值时实际抛出） | 错误变体存在但触发覆盖未验证 |
-| R-DEFINE-1 | `define` 字段仅在模板内部可见，不可经线程句柄访问 | ⚠️ | 字段分别存放于 template_self（非 expose_fields） | runtime 层面隔离；缺 Linter L-DEFINE-EXTERNAL-ACCESS |
+| R-DEFINE-1 | `define` 字段仅在模板内部可见，不可经线程句柄访问 | ✅ | runtime 天然隔离（FieldAccess 只查 expose_fields / expose_mutable_fields）+ `passes/define_external_access.rs`（L-DEFINE-EXTERNAL-ACCESS）| P0-5；测试 `test_define_field_external_invisible` |
 | R-DEFINE-2 | `define` 在 @template / $template 都可声明；`expose`/`expose_mutable` 仅在 $template | ✅ | parser 严格限制 scope template 成员（`parser.rs:228-243`） | |
 | R-TERMINATE-STABLE-1 | terminatable 线程 `terminate().wait()` 后 expose 字段稳定 | ✅ | `event_loop.rs:198-223` 主路径将 expose 同步固化（不再有 handler/body 写）| |
 | R-TERMINATE-STABLE-2 | 非 terminatable 线程无稳定态语义 | ✅ | 无 terminate() 入口；自然结束触发 §3 R-LIFE-1 | |
@@ -351,7 +124,7 @@ cargo build --workspace 与 cargo test --workspace 全部通过；`tessera-cli -
 | §2.1 | `.wait()` 同步阻塞；`await` 协程挂起 | ✅ | `builtin.rs:148-153`、`eval.rs::Expr::Await` | |
 | §2.2 | `HandlerFuture` 的 wait 语义类比 Future | ✅ | `builtin.rs:157-174`、`runtime/src/future.rs:97-219` | 区分 Dispatch/Execution 失败 |
 | §2.4 | `signal` / `contract` / `permit` 可直接 await | ✅ | `types/src/checker/exprs.rs:71-85` 把它们识别为 awaitable | `scope_binding.tss` 覆盖 signal |
-| 顶层 await 限制 | 顶层不可写 `await expr;` | ❌ | parser 不区分；缺 L-AWAIT-EXPR-IN-TOPLEVEL lint | 运行时若顶层无 async 环境，行为未定义 |
+| 顶层 await 限制 | 顶层不可写 `await expr;` | ✅ | `passes/toplevel_control_flow.rs`（L-TOPLEVEL-CONTROL-FLOW）禁止顶层 `await`/`return` | P1-1 |
 | async 函数若全程无 await（信息提示） | L-ASYNC-NO-AWAIT 信息级提示 | ❌ | 无对应 pass | |
 
 
@@ -371,7 +144,7 @@ cargo build --workspace 与 cargo test --workspace 全部通过；`tessera-cli -
 | §3.5 | 同步原语 `Broken` 失败 kind 为 `OwnerGone`/`OwnerCrashed`/`ScopeGone`/`ScopeCrashed` | ✅ | `runtime/src/signal.rs:6-28` | `scope_binding.tss` 仅覆盖 ScopeGone |
 | §5.2 | `__on_terminate__` 错误 → 线程崩溃；调用方 .wait()/await 崩溃 | ✅ | `event_loop.rs::run_teardown_hooks:384-402`（首错被记录、转 Crashed）| |
 | `__on_exit__` 错误 → 线程崩溃；终止流程失败 | ✅ | 同上；内联 `test_scope_on_exit_error_surfaced` | |
-| HandlerDispatchError kind 命名一致性 | "TargetTerminated" / "TargetTerminating" / "TargetCrashed" | 🔶 | `runtime/src/error.rs:198-207` 把 `TargetTerminated` 映射为 `"TargetGone"` | 与多数规范文档不一致；仅 `基础类型... 规范.md:393` 用 "TargetGone"。详见 §14 偏差 2 |
+| HandlerDispatchError kind 命名一致性 | "TargetTerminated" / "TargetTerminating" / "TargetCrashed" | ✅ | `runtime/src/error.rs:198-207` 映射为 `"TargetTerminated"`；规范《基础类型...》§6 表同步改正 | P0-1 / A-1；测试 `test_target_terminated_kind` |
 
 
 ## 7. 同步原语与崩溃传播规范
@@ -397,10 +170,10 @@ cargo build --workspace 与 cargo test --workspace 全部通过；`tessera-cli -
 | 条目 | 描述 | 状态 | 实现位置 | 备注 |
 |---|---|---|---|---|
 | §1.1.1 bool | `!` / `&&` / `||` / `==` / `!=` | ✅ | `lexer/src/token.rs`、`parser.rs:719-735`、`eval.rs::eval_binop` | |
-| §1.1.2 int | 32-bit signed；算术 + 比较 | 🔶 | 词法 `LitInt(i64)`、值 `Value::Int(i32)`、转换 `as i32` | i64 → i32 narrowing 可能溢出而不报错（用 `as` 截断），与"32 位有符号溢出语义"未明确对齐 |
+| §1.1.2 int | 32-bit signed；算术 wrap-around + 比较 | ✅ | 值 `Value::Int(i32)`；算术用 `wrapping_*`；超界字面量 parser 报错 | P0-4 + 规范 B-1（wrap-around 定稿）；测试 `test_int_literal_overflow` |
 | §1.1.3 double | IEEE754 64-bit | ✅ | `Value::Double(f64)`、`lexer LitDouble(f64)` | |
-| §1.1.4 char | 单 Unicode scalar；转义 | ⚠️ | `lexer/src/token.rs:307-334`（`\n \t \r \" \' \\ \0`，无 `\u{...}`）| 无 Unicode 转义 |
-| §1.1.5 String | 不可变；`+` 拼接（隐式转换）；`.length()`；`[x]` 取字符 | ⚠️ | `eval.rs` Add 支持 String + others；`builtin.rs:42`（`length`）；Index 表达式对 String 未实现 | `[i]` 缺失 |
+| §1.1.4 char | 单 Unicode scalar；转义 | ✅ | `lexer/src/token.rs::unescape`（`\n \t \r \" \' \\ \0` + `\u{HHHH}`）| P1-4；规范 B-2 转义表 |
+| §1.1.5 String | 不可变；`+` 拼接（隐式转换）；`.length()`；`[x]` 取字符 | ✅ | `eval.rs` Add 支持 String + others；`builtin.rs`（`length`）；String Index → char | P1-4；测试 `test_string_indexing_and_unicode` / `test_string_index_out_of_bounds` |
 | §1.2.1 never | 表达式底类型 | ✅ | `ty.rs::Type::Never`、`Value::Never`、parser `KwNever` | `panic` 返回类型 never |
 | §1.3.1 panic | `panic(msg): never` | ✅ | §6 已覆盖 | |
 | §1.3.2 assert | 失败 → AssertionFailed | ✅ | §6 已覆盖 | |
@@ -410,10 +183,10 @@ cargo build --workspace 与 cargo test --workspace 全部通过；`tessera-cli -
 | §2.2 运算符优先级 | 一元 > * / % > + - > 比较 > ==/!= > && > || | ✅ | `parser.rs:964-973`（Pratt binding power）+ unary 在 primary 前 | 单元测试 `pratt_precedence` |
 | §3.1 `let name = expr;` / `let name: T = expr;` | 变量声明必须初始化 | ✅ | `parser.rs:480-488` + `checker/stmts.rs:13-20` | |
 | §3.2 禁止未初始化声明 | `let x: int;` 禁止 | ✅ | parser 要求 `=` 否则报错 | |
-| §4.1.2 非 void 函数所有路径 return | 静态检查 | ❌ | 无 L-RETURN-NOT-ALL-PATHS | 缺失 |
+| §4.1.2 非 void 函数所有路径 return | 静态检查 | ✅ | `passes/return_not_all_paths.rs`（L-RETURN-NOT-ALL-PATHS）| P1 新增 |
 | §4.1.2 void 函数允许隐式末尾 return | | ✅ | `checker/bodies.rs` 实现 | |
 | §4.2 async 函数返回类型自动包 `Future<T>` | | ✅ | `registration.rs` 注册时包裹 | |
-| §4.3 hooks 签名约束（`__on_enter__`/`__on_exit__` 是同步 void；`__on_terminate__` 是 async void）| | ❌ | parser 只是按名识别成 hook；不强制签名 | 缺 L-FUNCTION-HOOK-SIGNATURE |
+| §4.3 hooks 签名约束（`__on_enter__`/`__on_exit__` 是同步 void；`__on_terminate__` 是 async void）| | ✅ | `passes/hook_signature.rs`（L-FUNCTION-HOOK-SIGNATURE）| P1-2 |
 | 函数返回类型不匹配 | 静态检查 | ❌ | 无 L-RETURN-TYPE-MISMATCH | 缺失 |
 | void 函数返回值表达式 | 静态检查 | ❌ | 无 L-VOID-RETURN-VALUE | |
 
@@ -423,10 +196,10 @@ cargo build --workspace 与 cargo test --workspace 全部通过；`tessera-cli -
 | 类型 | 规范方法 | 实现位置 | 状态 |
 |---|---|---|---|
 | `List<T>` | length、isEmpty、push、pop、get、set、indexing | `builtin.rs:41-109`、`Value::List(Rc<RefCell<Vec<Value>>>)` | ✅ |
-| `Map<K, V>` | size、get、set、remove | `builtin.rs:111-145`；构造需 `Map<K,V>(...)` 显式类型参 | ⚠️ contains() 缺失；spec 列出 contains/getOr 等方法部分未实现 |
+| `Map<K, V>` | size、get、set、remove、contains | `builtin.rs`；构造需 `Map<K,V>(...)` 显式类型参 | ✅ contains 已加（round 3）；keys/values/forEach 仍缺（需一等函数，见 §14/backlog）|
 | `Option<T>` | Some/None、isSome、isNone、unwrap、unwrapOr | `builtin.rs:22-28`、TypeCtor 路径 | ✅ |
 | `Result<T, E>` | Ok/Err、isOk、isErr、unwrap、unwrapErr、unwrapOr | `builtin.rs:30-38` | ✅ |
-| `HandlerDispatchError` | TargetTerminated/Terminating/Crashed 三个变体 + 字符串比较 | `runtime/src/error.rs:188-207` | 🔶（"TargetGone" 命名见 §6）|
+| `HandlerDispatchError` | TargetTerminated/Terminating/Crashed 三个变体 + 字符串比较 | `runtime/src/error.rs:188-207` | ✅（kind 命名 P0-1 已统一）|
 | `HandlerFuture<R>` | wait/waitHandler、isDone、isOk、isErr、与 `Err("Xxx")` 比较 | `runtime/src/future.rs:97-219`、`builtin.rs:157-174` | ✅ |
 | `Queue<T>` | push/enqueue/tryPush/tryPop/dequeue/size/isEmpty/isClosed/waitForNonEmpty/close；capacity ≤ 0 = 无界 | `runtime/src/queue.rs:1-106`、`builtin.rs:200-229` | ✅ |
 | `locked<T>` | lock/tryLock/unlock/isLocked/get/set；显式 + 隐式两接口 | `runtime/src/locked.rs` | ✅ |
@@ -434,8 +207,8 @@ cargo build --workspace 与 cargo test --workspace 全部通过；`tessera-cli -
 | `ParseError` | `String.toInt() / toDouble()` 返回 | `builtin.rs:52-62`：以 `Result<T, Value::Str(...)>` 表达 | ⚠️ 实际错误是 `Value::Str`，非独立 `ParseError` 类型 |
 | `error`（`.kind` + `.message`）| `try` 表达式结果 | `runtime/src/value.rs:47`、`error.rs::kind_and_message` | ✅ |
 | `Future<T>` | wait、isDone | `builtin.rs:148-154` | ✅ |
-| 字符串方法（startsWith / endsWith / split / trim / 等）| 标准容器规范列出 | 未实现 | ❌ |
-| `List.indexOf / contains / slice / forEach` 等扩展方法 | 标准容器规范扩展接口 | 部分未实现 | ❌ |
+| 字符串方法（startsWith / endsWith / contains / indexOf / trim / split）| 标准容器规范 §13 | `builtin.rs` | ✅（round 3 加 6 方法）|
+| `List.contains / indexOf / clear` 扩展方法 | 标准容器规范扩展接口 | `builtin.rs` | ✅（round 3）；`slice` / `forEach`（需一等函数）仍缺 |
 | 自定义构造器（List<int>() 元素列表）| `List<int>(1,2,3)` | `parser.rs:851-882`、`eval.rs::TypeCtor` | ✅ |
 
 
@@ -453,7 +226,7 @@ cargo build --workspace 与 cargo test --workspace 全部通过；`tessera-cli -
 | §5.2 `for(init; cond; update)`：循环变量作用域局限 | | ✅ | `parser.rs:519-543` + scoped env | |
 | §6.1 / §6.2 break / continue | 仅在循环内 | ⚠️ | parser 允许；`eval.rs` 使用 Result 退出循环；外层使用未做编译期检查 | 运行时返回的 Break/Continue 在循环外会传到顶层；缺静态拒绝 |
 | §7 return 语义 | 非 void 必须有值；线程 body 不允许直接 return 出线程 | ⚠️ | 运行时 return 在 thread body 顶层会导致主体结束（自然终止）| 行为合理但与 spec "不允许"严格语义不同；缺 lint |
-| §8.1 顶层禁止 return/break/continue | | ❌ | parser 允许出现；运行时把 break/continue 视为错误传播 | |
+| §8.1 顶层禁止 return/break/continue | | ✅ | `passes/toplevel_control_flow.rs`（L-TOPLEVEL-CONTROL-FLOW）：顶层 `await`/`return` 禁止，`break`/`continue` 仅循环内合法 | P1-1 |
 | §9 线程主体自然结束 → 线程终止 | | ✅ | `event_loop.rs:226-265` | |
 
 
@@ -473,9 +246,9 @@ cargo build --workspace 与 cargo test --workspace 全部通过；`tessera-cli -
 
 ## 12. Linter 规则对照
 
-实现注册在 `crates/tessera-lint/src/passes/mod.rs::all()`，当前共 **21** 个 pass（权威列表以 `mod.rs::all()` 为准；下表为初始审计的 9 条 + 各轮增量，后续增量见各轮小结）。
+实现注册在 `crates/tessera-lint/src/passes/mod.rs::all()`，当前共 **21** 个 pass（权威列表以 `mod.rs::all()` 为准）。
 
-### 已实现（初始 9 条 + 增量）
+### 已实现（21）
 
 | 规则 ID | 文件 | 检查内容 | 状态 |
 |---|---|---|---|
@@ -488,26 +261,35 @@ cargo build --workspace 与 cargo test --workspace 全部通过；`tessera-cli -
 | L-PERMIT-AWAIT-IN-SYNC | `passes/permit_await_in_sync.rs` | sync 上下文中不可 `.awaitPermit()` | ✅ |
 | L-PERMIT-WAIT-IN-ASYNC | `passes/permit_wait_in_async.rs` | async 上下文中用 `.wait()` 警告 | ✅ |
 | L-PERMIT-RELEASE-NON-POSITIVE | `passes/permit_release_non_positive.rs` | `permit(initial)` ≥ 0，`release(n)` > 0 | ✅ |
-| L-EXCL-AWAIT（Round 2）| `passes/exclusive_self_primitive_await.rs` | `#exclusive` 内 await/`.wait()` 自有同步原语（R-EXCL-4 sound 子集）| ✅ Warn |
+| L-EXCL-AWAIT | `passes/exclusive_self_primitive_await.rs` | `#exclusive` 内 await/`.wait()` 自有同步原语（R-EXCL-4 sound 子集）| ✅ Warn |
+| L-EXPOSE-READONLY-WRITE | `passes/expose_readonly_write.rs` | `expose`（只读）字段不可外部写 | ✅ |
+| L-DEFINE-EXTERNAL-ACCESS | `passes/define_external_access.rs` | `define` 字段不可经句柄外部访问 | ✅ |
+| L-TOPLEVEL-CONTROL-FLOW | `passes/toplevel_control_flow.rs` | 顶层禁 `await`/`return`，`break`/`continue` 仅循环内 | ✅ |
+| L-FUNCTION-HOOK-SIGNATURE | `passes/hook_signature.rs` | hook 签名约束（sync/async void）| ✅ |
+| L-HANDLER-RESULT-IGNORED | `passes/handler_result_ignored.rs` | 裸 handler 调用语句报警 | ✅ Warn |
+| L-HANDLER-PING-REDEFINED | `passes/handler_ping_redefined.rs` | 用户重定义 `__ping__` 报错 | ✅ |
+| L-RETURN-NOT-ALL-PATHS | `passes/return_not_all_paths.rs` | 非 void 函数所有路径须 return | ✅ |
+| L-SIGNAL-AWAIT-IN-SYNC | `passes/signal_await_in_sync.rs` | sync 上下文 `await <signal>` | ✅ |
+| L-SIGNAL-WAIT-IN-ASYNC | `passes/signal_wait_in_async.rs` | async 上下文 `.wait()` on signal | ✅ Warn |
+| L-CONTRACT-AWAIT-IN-SYNC | `passes/contract_await_in_sync.rs` | sync 上下文 `await <contract>` | ✅ |
+| L-CONTRACT-WAIT-IN-ASYNC | `passes/contract_wait_in_async.rs` | async 上下文 `.wait()` on contract | ✅ Warn |
 
 ### 未实现（按规范 `Linter 规则草案.md` 列举）
 
 | 类别 | 缺失规则 |
 |---|---|
-| async/await | L-ASYNC-NO-AWAIT (Info)；L-AWAIT-EXPR-IN-TOPLEVEL (Error) |
+| async/await | L-ASYNC-NO-AWAIT (Info)；L-AWAIT-EXPR-IN-TOPLEVEL (Error，顶层场景已由 L-TOPLEVEL-CONTROL-FLOW 覆盖) |
 | terminate | L-TERMINATE-FUTURE-IGNORED (Warn) |
-| expose / define | L-EXPOSE-READONLY-WRITE (Error)、L-EXPOSE-MUTABLE-ACCESS-PATTERN (Info)、L-DEFINE-EXTERNAL-ACCESS (Error)、L-DEFINE-IN-NON-TEMPLATE (Error) |
-| handler | L-HANDLER-NO-AWAIT (Info)、L-HANDLER-CALL-SITE-AWAIT (Info)、L-HANDLER-RESULT-IGNORED (Warn)、L-HANDLER-DISPATCH-ERROR-UNHANDLED (Info)、L-HANDLER-FUTURE-MISUSE (Error) |
-| template | L-TEMPLATE-APPLY-CONTEXT (Error)、L-AT-TEMPLATE-STACKING (Error) |
-| function | L-RETURN-TYPE-MISMATCH、L-RETURN-NOT-ALL-PATHS、L-FUNCTION-HOOK-SIGNATURE、L-VOID-RETURN-VALUE |
+| expose / define | L-EXPOSE-MUTABLE-ACCESS-PATTERN (Info)、L-DEFINE-IN-NON-TEMPLATE (Error) |
+| handler | L-HANDLER-NO-AWAIT (Info)、L-HANDLER-CALL-SITE-AWAIT (Info)、L-HANDLER-DISPATCH-ERROR-UNHANDLED (Info)、L-HANDLER-FUTURE-MISUSE (Error；`L-HANDLER-AWAIT-TYPE` 已覆盖反方向) |
+| template | L-TEMPLATE-APPLY-CONTEXT (Error)、L-AT-TEMPLATE-STACKING (Error；语法已防御) |
+| function | L-RETURN-TYPE-MISMATCH、L-VOID-RETURN-VALUE |
 | generics | L-GENERIC-NESTING-DEPTH (Info) |
 | option/result | L-OPTION-UNWRAP-POSSIBLE-NONE、L-RESULT-UNWRAP-POSSIBLE-ERR |
 | future | L-AWAIT-UNCONSUMED-FUTURE (Warn) |
-| sync 原语 | L-SIGNAL-AWAIT-IN-SYNC、L-SIGNAL-WAIT-IN-ASYNC、L-CONTRACT-AWAIT-IN-SYNC、L-CONTRACT-WAIT-IN-ASYNC、L-SYNC-EXPOSE-OWNER (Info)、L-SYNC-AWAIT-NOCHECK、L-SYNC-SCOPE-DEFINE-PASS (Warn)、L-SYNC-TRIGGER-AFTER-BROKEN (Info) |
+| sync 原语 | L-SYNC-EXPOSE-OWNER (Info)、L-SYNC-AWAIT-NOCHECK、L-SYNC-SCOPE-DEFINE-PASS (Warn)、L-SYNC-TRIGGER-AFTER-BROKEN (Info) |
 | panic / assert | L-ASSERT-SIDE-EFFECT、L-PANIC-OVERUSE、L-ASSERT-ALWAYS-TRUE、L-ASSERT-ALWAYS-FALSE |
 | style | L-NAMING-THREAD-HANDLE (Info) |
-
-> 估算：规范共定义 ~45–50 条 L 规则，实现仅 9 条。覆盖率 ~18%。
 
 
 ## 13. example-code.md 覆盖映射
@@ -518,96 +300,45 @@ cargo build --workspace 与 cargo test --workspace 全部通过；`tessera-cli -
 | 2. Producer/Consumer Queue<String> | Queue.enqueue / dequeue（返回 Option）、close | `helloworld.tss`、`demo.tss` | ✅ |
 | 3. Heartbeat 不可终止线程 | 无 `__on_terminate__`、async tick、asleep | 间接覆盖于 `helloworld.tss`；无独立 .tss | ⚠️ |
 | 4. 主流程 handler 调用 + .wait() | sync 上下文等待 HandlerFuture | `tests/tss/handler_dispatch.tss` | ✅ |
-| 5. `__ping__` 健康检查 | 隐式 handler `__ping__()` | 无（实现也未注入隐式 handler） | ❌ |
+| 5. `__ping__` 健康检查 | 隐式 handler `__ping__()` | `tests/tss/ping_handler.tss` | ✅（P0-2 注入）|
 | 6. expose / locked<int> 读取 | 直接 `.expose`、locked.get/set | `thread_lifecycle.tss`、`locked_shared.tss` | ✅ |
-| 7. 匿名线程 `${ ... }` | shorthand 语法 | 无独立 .tss；语法被 parser 单测覆盖 | ⚠️ |
+| 7. 匿名线程 `${ ... }` | shorthand 语法 | `tests/tss/anonymous_thread.tss` | ✅（P1-5）|
 | 8. async 函数 closeBusLater() | 顶层 async 函数 | 间接（handler_dispatch.tss 使用 keepalive） | ⚠️ |
 | 9. try/await 错误处理 | try await + HandlerDispatchError | `scope_binding.tss`（仅 ScopeGone） | ⚠️ |
-| 10. 终止后健康检查 | terminate + Err("TargetTerminated") 比较 | `thread_lifecycle.tss`（无 TargetTerminated kind 断言） | ⚠️ |
+| 10. 终止后健康检查 | terminate + Err("TargetTerminated") 比较 | `test_target_terminated_kind`（断言 kind）| ✅（P0-1）|
 
 
 ## 14. 已识别偏差
 
-### 偏差 1：handler 与主体的"并发执行"
+> 初始审计的偏差 handler/主体并发（A-2 修订规范 + P0-3 gate）、HandlerDispatchError kind 命名（P0-1）、int 字面量窄化（P0-4 + 规范 B-1 wrap-around 定稿）、scope `define` 外部可见（P0-5 + L-DEFINE-EXTERNAL-ACCESS）均已解决（详见 git 历史）。当前仅余下列一项。
 
-- **规范**：R-HANDLER-2 / R-CORE-SCHED-1，"同一线程同一时间只有一个执行点"。
-- **实现**：`crates/tessera-interp/src/event_loop.rs:340-355` 用 `tokio::task::spawn_local` 把 handler body 与主体平行地排进同一 `LocalSet`。代码注释明言这是为了打破 `readLine` 等场景下"handler 等待主体写入"导致的死锁。
-- **影响**：在 await 点之间确实仍保持原子性（单 OS 线程协作调度），但语义上 handler 与主体在 await 点之间可能交替推进，比"严格序列化"宽松。
-- **建议**：要么在规范中显式承认"协作调度下，handler 与主体在挂起点之间交替"（R-HANDLER-3 已暗示），要么用单一执行队列改写 `dispatch_handler_inline`。
-
-### 偏差 2：HandlerDispatchError 的 kind 命名
-
-- **规范（多数文档）**：`TargetTerminated` / `TargetTerminating` / `TargetCrashed`。
-- **规范（基础类型规范 §6 表 393）**：使用 `"TargetGone"` 表示已终止。
-- **实现**：`crates/tessera-runtime/src/error.rs:198-207` 将 `TargetTerminated` 映射为 `"TargetGone"`。
-- **影响**：用户写 `if (e.kind == "TargetTerminated") { ... }`（如 `example-code.md:284`）会永远为 false。
-- **建议**：以"线程与事件循环规范"和"标准容器规范"为权威，把 kind 改回 `TargetTerminated`；或者修订《基础类型...》使其与其它规范一致。
-
-### 偏差 3：i64 token → i32 Value 的窄化
-
-- **规范 §1.1.2**：int 为 32 位有符号。
-- **实现**：词法返回 `i64`（`lexer/src/token.rs:117`），运行时存为 `i32`（`runtime/src/value.rs:18`），转换用 `as i32` 截断（如 `builtin.rs:50` 的 `f as i32`）。
-- **影响**：字面量 `2147483648`（超过 i32::MAX）会被静默截断而非报错。
-- **建议**：在 parser 或类型检查阶段对超界字面量报错，或在 `as` 转换时检测 wrap。
-
-### 偏差 4：String / List 跨线程使用的诊断
+### 偏差 1：List / Map 跨线程使用缺领域级诊断
 
 - **规范**：跨线程使用 List/Map 需要显式包 `locked<T>` 或 `Queue<T>`。
-- **实现**：`Value::List(Rc<...>)` 不是 `Send`，跨线程使用会触发 Rust 编译/运行时错误（而非 Tessera 领域错误）。
-- **影响**：错误信息不直观；缺乏 Linter 提示。
-- **建议**：增加 Linter L-EXPOSE-MUTABLE-UNSAFE 已覆盖一半，但 expose（只读）暴露 List 也应给出 Info 级提示。
-
-### 偏差 5（潜在）：scope `define` 字段外部不可见的运行时强制
-
-- **规范 R-DEFINE-1**：`define` 字段只在 @template 内可见，不可经 ScopeBlock 外部访问。
-- **实现**：scope 的 `define` 字段存在 template_self；ScopeBlock 退出后该对象被丢弃。但 `eval.rs` 中 scope 期间 `field access` 是否区分 expose vs define 未审计。
-- **风险**：若运行时仅按字段名解析，可能允许从外部（更外层 scope）读到。
-- **建议**：补全 R-DEFINE-1 反例测试 + Linter L-DEFINE-EXTERNAL-ACCESS。
+- **实现**：`Value::List(Rc<...>)` / `Value::Map(Rc<...>)` 不是 `Send`，跨线程使用会触发 Rust 层错误而非 Tessera 领域错误。`L-EXPOSE-MUTABLE-UNSAFE` 已覆盖 `expose_mutable` 一侧。
+- **影响**：错误信息不直观；只读 `expose` 暴露 List/Map 缺 Info 级提示。
+- **建议**：增加一条 Info 级 lint，对 `expose` 暴露非并发安全容器给出提示。
 
 
-## 15. 差距修复 TODO（P0 / P1 / P2）
+## 15. 仍开放的 TODO
 
-### P0 — 语义正确性 / 测试可见的偏差
+> P0 全部、绝大多数 P1 已落地（见 §1–§13 与 git 历史）。以下为当前仍开放项。
 
-1. **统一 HandlerDispatchError kind**（§14 偏差 2）
-   - 改 `runtime/src/error.rs:198-207`：`TargetTerminated → "TargetTerminated"`；或修订《基础类型...》文档；
-   - 增加 `tests/integration.rs` 反例：`try await handler_call_after_terminate` 比较 kind。
+### 语言能力
 
-2. **R-HANDLER-PING：注入隐式 `__ping__()`**
-   - `types/src/checker/registration.rs`：在每个 thread template 的 `handlers` 中注册 `__ping__: () → String`；
-   - `interp/src/eval.rs::find_handler` 或 `event_loop.rs::dispatch_handler_inline` 兜底返回 `"pong"`；
-   - 新建测试 `tests/tss/ping_handler.tss`。
+- **用户函数泛型** `function f<T>(x: T): T`（§11）— parser/AST 无类型参数列表；影响面大，建议先 spec 后实现（monomorphization vs 类型变量）。
+- **一等函数 / lambda** — 解锁 `List.map/filter/reduce/forEach`、`Map.forEach` 等需要函数参数的标准库方法。
+- **标准库纯增量** — `Map.keys/values`、`List.slice`、`HashSet<T>`（`Channel<T>` 与 `Queue<T>` 高度重叠）。
 
-3. **int 字面量溢出诊断**（§14 偏差 3）
-   - 在 parser 或 checker 中检测 `LitInt(i64)` 超出 `i32` 范围 → 报错。
+### 缺失的 Linter 规则（见 §12 未实现表）
 
-4. **`define` 字段访问越界拒绝**（§14 偏差 5）
-   - 增加从 ScopeBlock 外部读 define 字段的反例测试；
-   - 必要时在 `eval.rs` 字段访问路径区分 expose vs define。
+- 优先：L-TEMPLATE-APPLY-CONTEXT、L-RETURN-TYPE-MISMATCH、L-VOID-RETURN-VALUE、L-DEFINE-IN-NON-TEMPLATE。
+- 信息级：L-ASYNC-NO-AWAIT、L-NAMING-THREAD-HANDLE、L-ASSERT-SIDE-EFFECT、L-PANIC-OVERUSE、L-GENERIC-NESTING-DEPTH；以及 expose 只读容器跨线程提示（§14 偏差 1）。
+- option/result unwrap 可空性、L-AWAIT-UNCONSUMED-FUTURE 等需数据流分析。
 
-### P1 — 核心规则缺失
+### 测试缺口（⚠️ 行）
 
-5. **顶层 await 拒绝**：L-AWAIT-EXPR-IN-TOPLEVEL 或 parser 阶段拒绝；
-6. **return / break / continue 顶层禁止**：在 parser/checker 中识别 toplevel context 并拒绝（§10）；
-7. **hook 签名约束**：L-FUNCTION-HOOK-SIGNATURE — `__on_enter__` / `__on_exit__` 必须为同步 void；`__on_terminate__` 必须为 async void；
-8. **handler 结果丢弃语义**：L-HANDLER-RESULT-IGNORED + L-HANDLER-DISPATCH-ERROR-UNHANDLED；
-9. **HandlerFuture 误用**：L-HANDLER-FUTURE-MISUSE 扩展 `handler_await_type` 覆盖 field/method-chain 接收者；
-10. **匿名 `${...}` 测试覆盖**：补 `tests/tss/anonymous_thread.tss`；
-11. ~~**Broken 唤醒不早于 #exclusive 结束**（R-SYNC-BREAK-3）：补反例测试；~~ **已解决（后续立项 Round 1）**——经裁决 P1，该子句既不可实现又冗余（`#exclusive` 原子性由 R-EXCL-1 保证，Broken 唤醒是独占协程自身续体），已从规范删除并删掉 best-effort 拐杖；改以 clause 2（成功不被回溯）建测试。
-12. **char Unicode 转义 `\u{xxxx}`**：扩展 `lexer/src/token.rs::unescape`；
-13. **String `[i]` 取字符**：扩展 `eval.rs::Expr::Index` 与 checker。
-
-### P2 — 静态分析与可用性
-
-14. **补齐 Linter 规则**（按 §12 缺失清单优先级）：
-    - 优先：L-EXPOSE-READONLY-WRITE、L-DEFINE-EXTERNAL-ACCESS、L-DEFINE-IN-NON-TEMPLATE、L-TEMPLATE-APPLY-CONTEXT、L-AT-TEMPLATE-STACKING、L-RETURN-TYPE-MISMATCH、L-RETURN-NOT-ALL-PATHS、L-VOID-RETURN-VALUE；
-    - 然后：signal/contract 的 await/wait 上下文检查（与已实现的 permit 镜像）；
-    - 信息级：L-NAMING-THREAD-HANDLE、L-ASSERT-SIDE-EFFECT、L-PANIC-OVERUSE。
-15. **标准容器扩展方法**：Map.contains、List.indexOf/contains/slice 等；String startsWith/endsWith/split/trim；
-16. **泛型嵌套深度提示**：L-GENERIC-NESTING-DEPTH；
-17. **Linter 反例测试**：为每个 pass 添加 `tests/lint_*.rs`，目前 `tessera-lint` 无独立测试入口；
-18. **Example 5 / 7 / 8 的端到端测试**：补 `__ping__`、`${ }`、顶层 async function 的 .tss 测试；
-19. **TargetTerminated kind 与 `Err("...")` 比较的内联测试**（与 P0-1 配套）。
+- `keepalive()` 永不返回的独立验证测试（§3）；`expose_mutable` 字段替换触发路径验证（§4）；短路求值带副作用 RHS 反例（§8）；同块重复声明拒绝（§10）；example 3/8/9 的独立 .tss。
 
 
 ## 16. 验证与维护
@@ -618,7 +349,7 @@ cargo build --workspace 与 cargo test --workspace 全部通过；`tessera-cli -
    - `rg "is_concurrent_safe" crates/` → 验证 §4 R-EXPOSE-2；
    - `rg "__on_terminate__" crates/tessera-interp/src/event_loop.rs` → 验证 §3 R-LIFE-2。
 2. **集成测试断言**：在仓库根运行 `cargo test -p tessera-interp` 应全部通过；报告中标 ✅ 的条目对应的测试名可直接 grep 自 `crates/tessera-interp/tests/integration.rs`。
-3. **Linter 实装核对**：`crates/tessera-lint/src/passes/mod.rs::all()` 共 9 个 `Box::new(...)`，与 §12 已实现表完全对应。
+3. **Linter 实装核对**：`crates/tessera-lint/src/passes/mod.rs::all()` 共 21 个 `Box::new(...)`，与 §12 已实现表完全对应。
 4. **示例核对**：用 `E:/Tessera-Spec/example-code.md` 与 `helloworld.tss` / `demo.tss` / `tests/tss/*.tss` 比对 §13。
 
 ### 维护建议
@@ -626,10 +357,10 @@ cargo build --workspace 与 cargo test --workspace 全部通过；`tessera-cli -
 - **绑定到 PR 流程**：当 PR 触及解释器语义、新增 Lint pass、新增内建函数时，更新本报告对应章节（建议加入 PR Checklist）。
 - **基线版本号**：报告顶部 commit 哈希需在每次主干合并后由作者更新（例如自动化脚本扫描 `git log -1 --format=%h`）。
 - **规范变更**：若 `E:/Tessera-Spec/*.md` 发生修订（即使是行号变化），需复核标 ✅ 的条目是否还和文档一致。
-- **TODO 跟踪**：建议把 §15 的 P0 / P1 / P2 拆为 GitHub Issue 或类似任务系统跟踪，每条 close 时同步更新本报告。
-- **报告自身的测试**：可在 CI 中加 `cargo test -p tessera-lint --tests` 类似 smoke check，确保 9 个 pass 与本报告一致。
+- **TODO 跟踪**：§15 仍开放项建议拆为 GitHub Issue 跟踪，每条 close 时同步更新本报告。
+- **报告自身的测试**：CI 可加 `cargo test -p tessera-lint --tests` smoke check，确保 21 个 pass 与本报告一致。
 
 ---
 
-*本报告由 spec-alignment 审计于 commit `bbda9b1`（2026-05-29）生成；后续更新请基于本文件，避免重复审计。*
+*本报告反映 tessera-mvp `7f993dd` / Tessera-Spec `7ded246` 的当前状态；逐轮修复脉络见 git 历史。*
 
