@@ -86,6 +86,30 @@ async fn test_locked_shared() {
     assert_runs_ok!(&src);
 }
 
+// ── R-HANDLER-PING: virtual __ping__ injected on every thread template ───────
+
+#[tokio::test]
+async fn test_ping_handler() {
+    let src = tss("ping_handler");
+    assert_runs_ok!(&src);
+}
+
+// ── R-HANDLER-2: handler-handler mutual exclusion ────────────────────────────
+
+#[tokio::test]
+async fn test_handler_mutex() {
+    let src = tss("handler_mutex");
+    assert_runs_ok!(&src);
+}
+
+// ── Anonymous shorthand thread `${ ... }` ────────────────────────────────────
+
+#[tokio::test]
+async fn test_anonymous_thread() {
+    let src = tss("anonymous_thread");
+    assert_runs_ok!(&src);
+}
+
 // ── Inline expression tests ───────────────────────────────────────────────────
 
 #[tokio::test]
@@ -201,4 +225,79 @@ async fn test_recursive_fib() {
         assert(fib(1) == 1);
         assert(fib(7) == 13);
     ");
+}
+
+// §1.1.5: `String[i]` returns the i-th Unicode scalar, and `\u{HHHH}` decodes
+// to a Unicode codepoint in both string and char literals (P1-4).
+#[tokio::test]
+async fn test_string_indexing_and_unicode() {
+    assert_runs_ok!(r#"
+        let s: String = "héllo";
+        assert(s[0] == 'h');
+        assert(s[1] == 'é');
+        assert(s.length() == 5);
+        let smiley: char = '\u{1F600}';
+        assert(smiley == '\u{1F600}');
+    "#);
+}
+
+#[tokio::test]
+async fn test_string_index_out_of_bounds() {
+    let err = assert_runs_err!(r#"
+        let s: String = "abc";
+        let c: char = s[3];
+    "#);
+    assert!(matches!(err, RuntimeError::IndexOutOfBounds { .. }));
+}
+
+// A `define` field on a thread template must NOT be accessible via the thread
+// handle; only `expose` / `expose_mutable` are external. Anchors R-DEFINE-1 / P0-5.
+#[tokio::test]
+async fn test_define_field_external_invisible() {
+    let err = assert_runs_err!(r#"
+        $template W() {
+            define secret: int = 42;
+            async function __on_terminate__(): void {}
+        }
+        $W() { await keepalive(); } := h;
+        let v: int = h.secret;
+        h.terminate().wait();
+    "#);
+    let msg = err.to_string();
+    assert!(
+        msg.contains("no field 'secret' on thread handle"),
+        "expected 'no field' panic for define access, got: {msg}",
+    );
+}
+
+// Tessera's `int` is 32-bit signed; a literal that does not round-trip through
+// i32 must fail at parse time rather than silently truncate in eval (P0-4).
+#[tokio::test]
+async fn test_int_literal_overflow() {
+    let tokens = tessera_lexer::lex("let x: int = 9999999999;");
+    let (_program, errors) = tessera_parser::parse(tokens);
+    assert!(
+        errors.iter().any(|e| e.message.contains("does not fit in `int`")),
+        "expected int-overflow parse error, got: {:?}",
+        errors,
+    );
+}
+
+// After terminate().wait() resolves, dispatching a handler on the dead thread
+// must surface the failure with kind == "TargetTerminated" (not the prior
+// implementation's "TargetGone"). Anchors the A-1 / P0-1 fix.
+#[tokio::test]
+async fn test_target_terminated_kind() {
+    assert_runs_ok!(r#"
+        $template W() {
+            async function __on_terminate__(): void {}
+            async handler ping_me(): String { return "ok"; }
+        }
+        $W() { await keepalive(); } := h;
+        h.terminate().wait();
+        let r: Result<String, error> = try await h.ping_me();
+        assert(r.isErr());
+        let e: error = r.unwrapErr();
+        assert(e.kind == "TargetTerminated");
+    "#);
 }

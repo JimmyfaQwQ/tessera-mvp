@@ -58,6 +58,12 @@ pub struct ThreadState {
 
     pub exclusive_mode: watch::Sender<bool>,
 
+    /// R-HANDLER-2 gate: while a handler task is in flight on this thread, the
+    /// event loop must not dispatch a second one. The watch's `changed()`
+    /// signal also wakes the main `select!` so the next queued handler can be
+    /// accepted as soon as the current one releases the flag.
+    handler_in_flight: watch::Sender<bool>,
+
     /// Primitives bound to this thread via `expose` / `expose_mutable`.
     /// Broken when this thread reaches Terminated or Crashed.
     owned_primitives: std::sync::Mutex<Vec<Arc<dyn BreakablePrimitive>>>,
@@ -100,6 +106,7 @@ impl ThreadState {
             terminate_signal_tx: Mutex::new(Some(signal_tx)),
             terminate_future,
             exclusive_mode: watch::channel(false).0,
+            handler_in_flight: watch::channel(false).0,
             owned_primitives: std::sync::Mutex::new(Vec::new()),
         })
     }
@@ -174,6 +181,16 @@ impl ThreadState {
             ThreadStatus::Running => {}
         }
 
+        // R-HANDLER-PING: `__ping__` is a dispatch-layer probe. We never queue
+        // it; the future is resolved before the call returns. This keeps the
+        // health check observable even when the target thread is inside an
+        // #exclusive block or another long-running handler (R-HANDLER-2 / 3 do
+        // not apply because __ping__ never enters the handler queue).
+        if handler_name == "__ping__" {
+            let _ = args; // explicitly discard — virtual handler takes no args
+            return Ok(TesseraFuture::immediate(FutureOutcome::Ok(Value::Str("pong".into()))));
+        }
+
         let (tx, rx) = oneshot::channel();
         let req = HandlerRequest { handler_name, args, result_tx: tx };
 
@@ -207,5 +224,21 @@ impl ThreadState {
     /// to block without busy-waiting until exclusive mode ends.
     pub fn subscribe_exclusive(&self) -> watch::Receiver<bool> {
         self.exclusive_mode.subscribe()
+    }
+
+    /// True while a handler task is currently in flight on this thread.
+    /// R-HANDLER-2 forbids two handlers from interleaving at suspension points.
+    pub fn handler_in_flight(&self) -> bool {
+        *self.handler_in_flight.borrow()
+    }
+
+    pub fn set_handler_in_flight(&self, v: bool) {
+        let _ = self.handler_in_flight.send(v);
+    }
+
+    /// Subscribe to handler-in-flight changes so the event loop can wake the
+    /// next select iteration as soon as the running handler releases the flag.
+    pub fn subscribe_handler_in_flight(&self) -> watch::Receiver<bool> {
+        self.handler_in_flight.subscribe()
     }
 }

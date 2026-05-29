@@ -1,0 +1,25 @@
+// R-HANDLER-PING: every thread template has an implicit
+// `async handler __ping__(): String` that returns "pong" immediately at the
+// dispatch layer (without entering the handler queue). This file anchors the
+// virtual-handler injection and the dispatch-layer special case.
+
+$template Worker() {
+    async function __on_terminate__(): void {}
+}
+
+$Worker() { await keepalive(); } := h;
+
+// 1. A running thread answers __ping__ with "pong" immediately.
+let pong1: String = h.__ping__().wait();
+assert(pong1 == "pong");
+
+// 2. Repeated probes work — the future is immediate and disposable.
+let pong2: String = h.__ping__().wait();
+assert(pong2 == "pong");
+
+// 3. After terminate, __ping__ dispatch fails with kind "TargetTerminated".
+h.terminate().wait();
+let probe: Result<String, error> = try await h.__ping__();
+assert(probe.isErr());
+let e: error = probe.unwrapErr();
+assert(e.kind == "TargetTerminated");

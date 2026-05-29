@@ -1,0 +1,52 @@
+// R-HANDLER-2: two handlers on the same thread MUST NOT interleave at
+// suspension points. This file fires two handlers back-to-back from outside;
+// each handler logs a "start" entry, sleeps, then logs an "end" entry. With
+// the handler-in-flight gate, the log must contain the two handlers in a
+// non-interleaved order; without the gate the log would interleave at the
+// `await asleep` point.
+
+$template W() {
+    expose_mutable log: Queue<String>;
+
+    function __on_enter__(): void {
+        self.log = Queue<String>();
+    }
+
+    async function __on_terminate__(): void {}
+
+    async handler op_a(): void {
+        self.log.push("start_a");
+        await asleep(50);
+        self.log.push("end_a");
+    }
+
+    async handler op_b(): void {
+        self.log.push("start_b");
+        await asleep(50);
+        self.log.push("end_b");
+    }
+}
+
+$W() { await keepalive(); } := h;
+
+// Fire two handlers back-to-back. The first dispatch may already be in flight
+// when we issue the second; the gate must serialize them.
+let f1: HandlerFuture<void> = h.op_a();
+let f2: HandlerFuture<void> = h.op_b();
+f1.wait();
+f2.wait();
+
+// Drain the log. Order must be non-interleaved: either A fully then B fully,
+// or B fully then A fully.
+let s0: String = h.log.tryPop().unwrap();
+let s1: String = h.log.tryPop().unwrap();
+let s2: String = h.log.tryPop().unwrap();
+let s3: String = h.log.tryPop().unwrap();
+
+let a_first: bool = (s0 == "start_a") && (s1 == "end_a")
+                 && (s2 == "start_b") && (s3 == "end_b");
+let b_first: bool = (s0 == "start_b") && (s1 == "end_b")
+                 && (s2 == "start_a") && (s3 == "end_a");
+assert(a_first || b_first);
+
+h.terminate().wait();

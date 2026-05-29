@@ -7,3 +7,7 @@ edition = "2021"
 tessera-ast   = { path = "../tessera-ast" }
 tessera-types = { path = "../tessera-types" }
 miette        = { workspace = true }
+
+[dev-dependencies]
+tessera-lexer  = { path = "../tessera-lexer" }
+tessera-parser = { path = "../tessera-parser" }

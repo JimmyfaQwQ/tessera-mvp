@@ -65,6 +65,8 @@ impl<'e> TypeChecker<'e> {
                 self.check_expr(&i.index);
                 match obj_ty {
                     Type::List(inner) => *inner,
+                    // §1.1.5: `String[i]` returns the i-th Unicode scalar.
+                    Type::TString => Type::Char,
                     _ => Type::Error,
                 }
             }

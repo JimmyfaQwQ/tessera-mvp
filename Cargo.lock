@@ -525,6 +525,8 @@ version = "0.1.0"
 dependencies = [
  "miette",
  "tessera-ast",
+ "tessera-lexer",
+ "tessera-parser",
  "tessera-types",
 ]
 

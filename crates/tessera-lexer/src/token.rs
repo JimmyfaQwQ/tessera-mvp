@@ -119,7 +119,10 @@ pub enum Token {
     #[regex(r#""([^"\\]|\\.)*""#, lex_string)]
     LitString(String),
 
-    #[regex(r"'([^'\\]|\\.)'", lex_char)]
+    // The first alternative matches `\u{HHHH}` Unicode-codepoint escapes,
+    // which are multi-character escape sequences that the original
+    // single-`\\.` regex could not capture inside a char literal.
+    #[regex(r"'(\\u\{[0-9a-fA-F]+\}|[^'\\]|\\.)'", lex_char)]
     LitChar(char),
 
     // ── Identifiers (after all keywords to avoid masking) ────────────────────
@@ -323,6 +326,41 @@ fn unescape(s: &str) -> String {
                 Some('\'') => out.push('\''),
                 Some('\\') => out.push('\\'),
                 Some('0') => out.push('\0'),
+                // `\u{HHHH}` — Unicode scalar by hex codepoint. On any
+                // malformed form we fall back to the literal `\u...` text so
+                // the lexer never aborts; the parser will surface a more
+                // meaningful error if the resulting string is wrong.
+                Some('u') => {
+                    if chars.peek() == Some(&'{') {
+                        chars.next(); // consume `{`
+                        let mut hex = String::with_capacity(6);
+                        let mut closed = false;
+                        while let Some(&hc) = chars.peek() {
+                            if hc == '}' { chars.next(); closed = true; break; }
+                            if !hc.is_ascii_hexdigit() || hex.len() >= 6 { break; }
+                            hex.push(hc);
+                            chars.next();
+                        }
+                        if closed {
+                            if let Some(cp) = u32::from_str_radix(&hex, 16)
+                                .ok()
+                                .and_then(char::from_u32)
+                            {
+                                out.push(cp);
+                            } else {
+                                out.push_str("\\u{");
+                                out.push_str(&hex);
+                                out.push('}');
+                            }
+                        } else {
+                            out.push_str("\\u{");
+                            out.push_str(&hex);
+                        }
+                    } else {
+                        out.push('\\');
+                        out.push('u');
+                    }
+                }
                 Some(other) => { out.push('\\'); out.push(other); }
                 None => out.push('\\'),
             }

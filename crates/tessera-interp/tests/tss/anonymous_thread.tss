@@ -1,0 +1,10 @@
+// `${ ... }` shorthand spawns a non-terminatable anonymous thread. The body
+// runs to completion; the spawned handle can still be probed via the virtual
+// `__ping__` handler while the body is still running.
+
+${ await asleep(50); } := h;
+
+// Immediately after spawn the body is still mid-asleep — the dispatch-layer
+// probe must report alive.
+let pong: String = h.__ping__().wait();
+assert(pong == "pong");

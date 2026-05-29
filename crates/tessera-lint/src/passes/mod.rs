@@ -7,24 +7,38 @@
 mod helpers;
 
 mod await_async_only;
+mod define_external_access;
 mod expose_mutable_unsafe;
+mod expose_readonly_write;
 mod generic_type_arg_missing;
 mod handler_await_type;
 mod handler_must_async;
+mod handler_ping_redefined;
+mod handler_result_ignored;
+mod hook_signature;
 mod permit_await_in_sync;
 mod permit_release_non_positive;
 mod permit_wait_in_async;
+mod return_not_all_paths;
 mod terminate_non_terminatable;
+mod toplevel_control_flow;
 
 pub use await_async_only::AwaitAsyncOnly;
+pub use define_external_access::DefineExternalAccess;
 pub use expose_mutable_unsafe::ExposeMutableUnsafe;
+pub use expose_readonly_write::ExposeReadonlyWrite;
 pub use generic_type_arg_missing::GenericTypeArgMissing;
 pub use handler_await_type::HandlerAwaitType;
 pub use handler_must_async::HandlerMustAsync;
+pub use handler_ping_redefined::HandlerPingRedefined;
+pub use handler_result_ignored::HandlerResultIgnored;
+pub use hook_signature::HookSignature;
 pub use permit_await_in_sync::PermitAwaitInSync;
 pub use permit_release_non_positive::PermitReleaseNonPositive;
 pub use permit_wait_in_async::PermitWaitInAsync;
+pub use return_not_all_paths::ReturnNotAllPaths;
 pub use terminate_non_terminatable::TerminateNonTerminatable;
+pub use toplevel_control_flow::ToplevelControlFlow;
 
 use crate::LintPass;
 
@@ -35,10 +49,17 @@ pub(crate) fn all() -> Vec<Box<dyn LintPass>> {
         Box::new(HandlerMustAsync),
         Box::new(HandlerAwaitType),
         Box::new(ExposeMutableUnsafe),
+        Box::new(ExposeReadonlyWrite),
+        Box::new(DefineExternalAccess),
         Box::new(GenericTypeArgMissing),
         Box::new(TerminateNonTerminatable),
         Box::new(PermitAwaitInSync),
         Box::new(PermitWaitInAsync),
         Box::new(PermitReleaseNonPositive),
+        Box::new(ToplevelControlFlow),
+        Box::new(HookSignature),
+        Box::new(HandlerResultIgnored),
+        Box::new(HandlerPingRedefined),
+        Box::new(ReturnNotAllPaths),
     ]
 }

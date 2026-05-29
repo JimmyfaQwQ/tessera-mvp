@@ -788,7 +788,22 @@ impl Parser {
         match self.peek().cloned() {
             Some(Token::LitTrue)  => { self.advance(); Expr::Lit(Literal { kind: LitKind::Bool(true), span }) }
             Some(Token::LitFalse) => { self.advance(); Expr::Lit(Literal { kind: LitKind::Bool(false), span }) }
-            Some(Token::LitInt(n)) => { self.advance(); Expr::Lit(Literal { kind: LitKind::Int(n), span }) }
+            Some(Token::LitInt(n)) => {
+                self.advance();
+                // Tessera's `int` is 32-bit signed; reject literals that won't
+                // round-trip through i32 instead of silently truncating in eval.
+                if n < i32::MIN as i64 || n > i32::MAX as i64 {
+                    self.errors.push(
+                        ParseError::new(
+                            format!("integer literal {n} does not fit in `int` (32-bit signed; range -2147483648..=2147483647)"),
+                            span,
+                        )
+                        .primary_label("this literal overflows `int`")
+                        .with_help("use a smaller value, or wrap the computation across a different code path if you need 64-bit ranges"),
+                    );
+                }
+                Expr::Lit(Literal { kind: LitKind::Int(n), span })
+            }
             Some(Token::LitDouble(f)) => { self.advance(); Expr::Lit(Literal { kind: LitKind::Double(f), span }) }
             Some(Token::LitString(s)) => { self.advance(); Expr::Lit(Literal { kind: LitKind::String(s), span }) }
             Some(Token::LitChar(c)) => { self.advance(); Expr::Lit(Literal { kind: LitKind::Char(c), span }) }

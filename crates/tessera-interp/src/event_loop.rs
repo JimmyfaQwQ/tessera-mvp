@@ -160,8 +160,15 @@ pub async fn run_thread_task(
     // block exits.
     let mut terminate_during_exclusive = false;
 
+    // R-HANDLER-2: subscribe to the handler-in-flight watch so the select loop
+    // wakes when the running handler task releases the gate; without this the
+    // loop could sleep on body_fut forever after a handler completes, leaving
+    // the next queued handler waiting in mpsc.
+    let mut hf_changed = state.subscribe_handler_in_flight();
+
     loop {
         let exclusive = state.exclusive_mode();
+        let handler_busy = state.handler_in_flight();
 
         // R-EXCL-3: exclusive block just ended and a deferred terminate is
         // pending — run teardown now (body_fut is abandoned).
@@ -297,11 +304,19 @@ pub async fn run_thread_task(
             }
 
             // ── Handler dispatch (inline, cooperative) ───────────────────────
-            req = handler_rx.recv(), if !exclusive && !terminate_during_exclusive => {
+            // R-HANDLER-2: gate on `!handler_busy` so a second handler cannot
+            // start while another is still in flight on this thread.
+            req = handler_rx.recv(), if !exclusive && !terminate_during_exclusive && !handler_busy => {
                 if let Some(req) = req {
                     dispatch_handler_inline(&interp, decl.as_deref(), req, state.clone());
                 }
             }
+
+            // ── Wakeup branch for handler-in-flight transitions ──────────────
+            // No-op body: the loop re-iterates and the handler_rx gate above
+            // re-evaluates. Without this branch a paused select would sleep on
+            // body_fut and never notice that the previous handler completed.
+            _ = hf_changed.changed(), if handler_busy => {}
         }
     }
 }
@@ -331,27 +346,39 @@ fn dispatch_handler_inline(
 
     match handler {
         Some(h) => {
+            // R-HANDLER-2: claim the handler-in-flight gate synchronously so
+            // the main select gate already sees `handler_busy=true` on its very
+            // next iteration. The spawned task releases the gate on both the
+            // success and failure paths before sending the outcome.
+            state.set_handler_in_flight(true);
+
             let (exec_tx, exec_rx) = oneshot::channel::<FutureOutcome>();
             let _ = req.result_tx.send(HandlerOutcome::Dispatched(TesseraFuture::new(exec_rx)));
 
             let h = h.clone();
             let interp = interp.clone();
             let args = req.args;
+            let state_for_task = state.clone();
             tokio::task::spawn_local(async move {
                 // R-EXCL-1: wait (without busy-polling) for any in-progress
                 // exclusive block on this thread to end before starting handler
                 // execution, so handlers dispatched just before the block cannot
                 // interleave with it at await points inside the block.
-                if state.exclusive_mode() {
-                    let mut rx = state.subscribe_exclusive();
+                if state_for_task.exclusive_mode() {
+                    let mut rx = state_for_task.subscribe_exclusive();
                     // wait_for checks the current value first, so this is
                     // race-free: if exclusive already ended we return immediately.
                     let _ = rx.wait_for(|&v| !v).await;
                 }
-                match interp.exec_handler_body(&h, args).await {
-                    Ok(v)  => { let _ = exec_tx.send(FutureOutcome::Ok(v)); }
-                    Err(e) => { let _ = exec_tx.send(FutureOutcome::Failed(e.to_string())); }
-                }
+                let outcome = match interp.exec_handler_body(&h, args).await {
+                    Ok(v)  => FutureOutcome::Ok(v),
+                    Err(e) => FutureOutcome::Failed(e.to_string()),
+                };
+                // Release the gate BEFORE delivering the outcome so the caller
+                // is unblocked simultaneously with the main loop becoming free
+                // to accept the next handler.
+                state_for_task.set_handler_in_flight(false);
+                let _ = exec_tx.send(outcome);
             });
         }
         None => {

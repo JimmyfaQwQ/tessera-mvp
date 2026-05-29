@@ -2,7 +2,7 @@
 //! reserved every template's name.
 
 use tessera_ast::*;
-use crate::{TemplateInfo, TemplateKind, HandlerSig, ExposeInfo};
+use crate::{TemplateInfo, TemplateKind, HandlerSig, ExposeInfo, Type};
 use indexmap::IndexMap;
 
 use super::TypeChecker;
@@ -56,6 +56,18 @@ impl<'e> TypeChecker<'e> {
                 _ => {}
             }
         }
+
+        // R-HANDLER-PING: every thread template implicitly carries
+        // `async handler __ping__(): String`. We register it unconditionally so
+        // the type checker sees `handle.__ping__()` as legal; the runtime
+        // intercepts at dispatch and returns "pong" without ever queuing the
+        // call (see ThreadState::dispatch_handler). A user-declared __ping__ is
+        // overwritten here on purpose — lint L-HANDLER-PING-REDEFINED is the
+        // surface that tells the user not to do this.
+        handlers.insert(
+            "__ping__".to_string(),
+            HandlerSig { params: vec![], return_type: Type::TString },
+        );
 
         let info = TemplateInfo {
             kind: TemplateKind::Thread,

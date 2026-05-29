@@ -198,7 +198,7 @@ pub enum HandlerDispatchError {
 impl HandlerDispatchError {
     pub fn kind_and_message(&self) -> (String, String) {
         let kind = match self {
-            HandlerDispatchError::TargetTerminated  => "TargetGone",
+            HandlerDispatchError::TargetTerminated  => "TargetTerminated",
             HandlerDispatchError::TargetTerminating => "TargetTerminating",
             HandlerDispatchError::TargetCrashed     => "TargetCrashed",
         };
