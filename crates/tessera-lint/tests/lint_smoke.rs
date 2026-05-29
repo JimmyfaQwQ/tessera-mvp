@@ -584,3 +584,75 @@ fn default_param_allows_omission() {
     "#);
     assert!(!has_rule(&diags, "L-AT-TEMPLATE-PARAM-MISMATCH"));
 }
+
+// ── L-ASSERT-ALWAYS-TRUE / L-ASSERT-ALWAYS-FALSE ─────────────────────────────
+
+#[test]
+fn assert_always_true_is_warned() {
+    let diags = run_lints("assert(1 == 1);");
+    assert!(has_rule(&diags, "L-ASSERT-ALWAYS-TRUE"));
+}
+
+#[test]
+fn assert_always_false_is_warned() {
+    let diags = run_lints(r#"assert(2 > 3, "nope");"#);
+    assert!(has_rule(&diags, "L-ASSERT-ALWAYS-FALSE"));
+}
+
+#[test]
+fn assert_with_variable_is_not_folded() {
+    let diags = run_lints("let x: int = 5; assert(x > 0);");
+    assert!(!has_rule(&diags, "L-ASSERT-ALWAYS-TRUE"));
+    assert!(!has_rule(&diags, "L-ASSERT-ALWAYS-FALSE"));
+}
+
+// ── L-AWAIT-UNCONSUMED-FUTURE ────────────────────────────────────────────────
+
+#[test]
+fn bare_async_call_is_warned() {
+    let diags = run_lints(r#"
+        async function f(): int { return 1; }
+        f();
+    "#);
+    assert!(has_rule(&diags, "L-AWAIT-UNCONSUMED-FUTURE"));
+}
+
+#[test]
+fn consumed_async_call_is_ok() {
+    let diags = run_lints(r#"
+        async function f(): int { return 1; }
+        let x: int = f().wait();
+    "#);
+    assert!(!has_rule(&diags, "L-AWAIT-UNCONSUMED-FUTURE"));
+}
+
+#[test]
+fn bare_sync_call_is_ok() {
+    let diags = run_lints(r#"
+        function f(): int { return 1; }
+        f();
+    "#);
+    assert!(!has_rule(&diags, "L-AWAIT-UNCONSUMED-FUTURE"));
+}
+
+// ── L-TERMINATE-FUTURE-IGNORED ───────────────────────────────────────────────
+
+#[test]
+fn bare_terminate_is_warned() {
+    let diags = run_lints(r#"
+        $template W() { async function __on_terminate__(): void {} }
+        $W() { await keepalive(); } := h;
+        h.terminate();
+    "#);
+    assert!(has_rule(&diags, "L-TERMINATE-FUTURE-IGNORED"));
+}
+
+#[test]
+fn waited_terminate_is_ok() {
+    let diags = run_lints(r#"
+        $template W() { async function __on_terminate__(): void {} }
+        $W() { await keepalive(); } := h;
+        h.terminate().wait();
+    "#);
+    assert!(!has_rule(&diags, "L-TERMINATE-FUTURE-IGNORED"));
+}

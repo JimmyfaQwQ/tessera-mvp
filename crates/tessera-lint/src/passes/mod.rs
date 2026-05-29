@@ -7,7 +7,9 @@
 mod helpers;
 mod scoped_visitor;
 
+mod assert_const_condition;
 mod await_async_only;
+mod await_unconsumed_future;
 mod break_continue_outside_loop;
 mod contract_await_in_sync;
 mod contract_wait_in_async;
@@ -30,11 +32,14 @@ mod return_type_mismatch;
 mod signal_await_in_sync;
 mod signal_wait_in_async;
 mod template_param_mismatch;
+mod terminate_future_ignored;
 mod terminate_non_terminatable;
 mod toplevel_control_flow;
 mod void_return_value;
 
+pub use assert_const_condition::AssertConstCondition;
 pub use await_async_only::AwaitAsyncOnly;
+pub use await_unconsumed_future::AwaitUnconsumedFuture;
 pub use break_continue_outside_loop::BreakContinueOutsideLoop;
 pub use contract_await_in_sync::ContractAwaitInSync;
 pub use contract_wait_in_async::ContractWaitInAsync;
@@ -57,6 +62,7 @@ pub use return_type_mismatch::ReturnTypeMismatch;
 pub use signal_await_in_sync::SignalAwaitInSync;
 pub use signal_wait_in_async::SignalWaitInAsync;
 pub use template_param_mismatch::TemplateParamMismatch;
+pub use terminate_future_ignored::TerminateFutureIgnored;
 pub use terminate_non_terminatable::TerminateNonTerminatable;
 pub use toplevel_control_flow::ToplevelControlFlow;
 pub use void_return_value::VoidReturnValue;
@@ -92,5 +98,8 @@ pub(crate) fn all() -> Vec<Box<dyn LintPass>> {
         Box::new(ExposeReadonlyContainer),
         Box::new(GenericNestingDepth),
         Box::new(TemplateParamMismatch),
+        Box::new(AssertConstCondition),
+        Box::new(AwaitUnconsumedFuture),
+        Box::new(TerminateFutureIgnored),
     ]
 }
