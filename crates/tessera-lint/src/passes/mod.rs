@@ -21,7 +21,6 @@ mod handler_await_type;
 mod handler_ping_redefined;
 mod handler_result_ignored;
 mod hook_signature;
-mod panic_overuse;
 mod permit_await_in_sync;
 mod permit_release_non_positive;
 mod permit_wait_in_async;
@@ -47,7 +46,6 @@ pub use handler_await_type::HandlerAwaitType;
 pub use handler_ping_redefined::HandlerPingRedefined;
 pub use handler_result_ignored::HandlerResultIgnored;
 pub use hook_signature::HookSignature;
-pub use panic_overuse::PanicOveruse;
 pub use permit_await_in_sync::PermitAwaitInSync;
 pub use permit_release_non_positive::PermitReleaseNonPositive;
 pub use permit_wait_in_async::PermitWaitInAsync;
@@ -88,6 +86,5 @@ pub(crate) fn all() -> Vec<Box<dyn LintPass>> {
         Box::new(VoidReturnValue),
         Box::new(ExposeReadonlyContainer),
         Box::new(GenericNestingDepth),
-        Box::new(PanicOveruse),
     ]
 }

@@ -494,30 +494,3 @@ fn shallow_generic_is_ok() {
     let diags = run_lints("function f(x: List<List<int>>): void {}");
     assert!(!has_rule(&diags, "L-GENERIC-NESTING-DEPTH"));
 }
-
-// ── L-PANIC-OVERUSE ──────────────────────────────────────────────────────────
-
-#[test]
-fn many_panics_in_one_function_is_flagged() {
-    let diags = run_lints(r#"
-        function f(c: int): int {
-            if (c == 0) { panic("a"); }
-            if (c == 1) { panic("b"); }
-            if (c == 2) { panic("c"); }
-            if (c == 3) { panic("d"); }
-            return c;
-        }
-    "#);
-    assert!(has_rule(&diags, "L-PANIC-OVERUSE"));
-}
-
-#[test]
-fn few_panics_in_one_function_is_ok() {
-    let diags = run_lints(r#"
-        function f(c: int): int {
-            if (c == 0) { panic("a"); }
-            return c;
-        }
-    "#);
-    assert!(!has_rule(&diags, "L-PANIC-OVERUSE"));
-}
