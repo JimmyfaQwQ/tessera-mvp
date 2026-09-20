@@ -1,4 +1,4 @@
-//! Smoke tests for the lint passes added under the spec-alignment fix plan.
+//! Smoke tests for the lint passes.
 //!
 //! Each test runs lex → parse → type-check → lint and asserts that the
 //! expected rule fires (or does not fire on a positive example).

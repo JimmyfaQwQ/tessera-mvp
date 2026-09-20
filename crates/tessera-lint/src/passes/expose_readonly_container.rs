@@ -7,8 +7,6 @@
 //! concurrency-safe story is `locked<T>` / `Queue<T>`. `expose_mutable` of an
 //! unsafe type is already a hard error (L-EXPOSE-MUTABLE-UNSAFE); the read-only
 //! side is advisory only, hence Info.
-//!
-//! Anchors 《数据共享与并发安全规范 §3.2 / §5》 and `spec-alignment` 偏差 1.
 
 use tessera_ast::*;
 use tessera_types::{Type, TypeEnv};
